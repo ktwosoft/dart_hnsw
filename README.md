@@ -1,6 +1,6 @@
 # dart_hnsw
 
-Cross-platform Dart Native bindings for [hnswlib](https://github.com/nmslib/hnswlib) with fast approximate nearest neighbor search, explicit persistence, and shared native index management.
+Cross-platform Dart Native bindings for [hnswlib](https://github.com/nmslib/hnswlib) with fast approximate nearest neighbor search, explicit persistence, and shared native index management built for multi-isolate workloads.
 
 ---
 
@@ -8,10 +8,27 @@ Cross-platform Dart Native bindings for [hnswlib](https://github.com/nmslib/hnsw
 
 - Approximate nearest neighbor search through native `hnswlib`
 - Supports `l2`, `innerProduct`, and `cosine` metrics
+- One shared native index per canonical path inside a Dart process
+- Reader-writer locking so concurrent searches across isolates can proceed together while writes stay exclusive
+- Symmetric multi-isolate access without duplicating the same index in each isolate
 - Explicit `checkpoint()` persistence
-- Shared in-process access to one native index per canonical path
 - Cross-process ownership locking
 - Works with `dart run`, `dart test`, and `dart compile exe`
+
+---
+
+## Why This Package
+
+Most local HNSW packages are optimized for single-isolate, pure-Dart usage. `dart_hnsw` exists for the case where multiple isolates in the same Dart process need to work against the same native index efficiently.
+
+Core concurrency model:
+
+- opening the same index path from multiple isolates attaches them to one shared native context
+- searches use a shared read lock, so concurrent readers can run at the same time
+- upserts, deletes, resize, and `checkpoint()` use an exclusive write lock
+- a separate cross-process file lock prevents two different processes from mutating the same on-disk index at once
+
+This lets you build isolate-heavy CLI or server workloads without copying one large HNSW index into every isolate separately.
 
 ---
 
@@ -63,6 +80,8 @@ dart run bin/your_app.dart
 
 The native library is built and loaded automatically through Dart hooks/code assets. No manual `cmake` step is required.
 
+This mode preserves the shared native context behavior for multiple isolates inside the same Dart process.
+
 ### `dart compile exe`
 
 Use this when shipping a compiled CLI, but copy the shared library next to the executable.
@@ -106,8 +125,20 @@ DART_HNSW_LIBRARY_PATH=/opt/dart_hnsw/libdart_hnsw.so ./your_app
 - `close()` only releases the handle. It does not save.
 - `checkpoint()` writes the raw `hnswlib` index file.
 - Reopening a persisted index is the caller's responsibility: use the same `dimensions`, `metric`, and `allowReplaceDeleted` values that were used to create it.
-- The package validates config only when multiple handles in the same process attach to the same active shared context.
+- The package validates config when multiple handles in the same process attach to the same active shared context.
 - Reopening a file with mismatched config is unsupported and may fail or produce incorrect semantics.
+
+---
+
+## Concurrency Model
+
+- Same process, same canonical path: one shared native index context
+- Same process, multiple isolates: all isolates attach to that shared context
+- Searches and getters: shared reader lock
+- Upserts, deletes, resize, and checkpoint: exclusive writer lock
+- Different processes: one process owns the index path at a time through a file lock
+
+This is one of the package's core design goals: isolate-friendly shared native indexing, not just local ANN search.
 
 ---
 
@@ -143,7 +174,7 @@ Web is unsupported. Mobile targets are not declared yet.
 | `liveCount` | Convenience count of non-deleted entries |
 | `maxElements` | Current capacity |
 | `efSearch` | Current search breadth |
-| `contextId` | Shared native context identifier |
+| `contextId` | Shared native context identifier for same-process/same-path handles |
 
 ### `HnswMetric`
 
@@ -164,6 +195,8 @@ For a full local smoke test, including `dart compile exe` plus sidecar packaging
 ```sh
 bash test/run_all.sh
 ```
+
+The test suite includes shared-context and multi-isolate coverage, not just single-isolate correctness.
 
 ---
 

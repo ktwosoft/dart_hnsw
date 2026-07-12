@@ -1,6 +1,6 @@
 name: dart_hnsw
 version: 0.1.0
-description: Cross-platform Dart Native bindings for hnswlib with explicit persistence and shared in-process indexing.
+description: Cross-platform hnswlib bindings for Dart with shared in-process indexes, reader-writer locking, and multi-isolate concurrency.
 homepage: https://github.com/ktwosoft/dart_hnsw
 repository: https://github.com/ktwosoft/dart_hnsw
 issue_tracker: https://github.com/ktwosoft/dart_hnsw/issues
