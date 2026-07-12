@@ -1,0 +1,19 @@
+# Dart / Flutter
+.dart_tool/
+.packages
+pubspec.lock
+*.log
+
+# Build output
+build/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

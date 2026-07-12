@@ -1,0 +1,7 @@
+.dart_tool/
+build/
+native/CMakeLists.txt
+native/hnswlib/
+PLAN_FINAL.md
+.gitmodules
+.DS_Store
