@@ -1,11 +1,12 @@
 # dart_hnsw
 
-Cross-platform Dart Native bindings for [hnswlib](https://github.com/nmslib/hnswlib) with fast approximate nearest neighbor search, explicit persistence, and shared native index management built for multi-isolate workloads.
+Cross-platform Dart Native bindings for [hnswlib](https://github.com/nmslib/hnswlib) — fast approximate nearest neighbor search through native C++ code with shared in-process indexes, reader-writer locking, and multi-isolate concurrency.
 
 ---
 
 ## Features
 
+- Native C++ performance — search and index operations run in native code via `dart:ffi`, not in the Dart VM. No pure-Dart ANN overhead.
 - Approximate nearest neighbor search through native `hnswlib`
 - Supports `l2`, `innerProduct`, and `cosine` metrics
 - One shared native index per canonical path inside a Dart process
@@ -20,6 +21,13 @@ Cross-platform Dart Native bindings for [hnswlib](https://github.com/nmslib/hnsw
 ## Why This Package
 
 Most local HNSW packages are optimized for single-isolate, pure-Dart usage. `dart_hnsw` exists for the case where multiple isolates in the same Dart process need to work against the same native index efficiently.
+
+Native efficiency. Index construction, vector insertion, and nearest-neighbor search all run in C++ through `dart:ffi` — not in the Dart VM. This means:
+
+- **No serialization overhead** — vectors are passed directly as native float arrays
+- **No GC pressure** from large index structures — the entire graph lives off-heap in native memory
+- **Shared memory** — one native context per index path, shared across all isolates in the process
+- **Zero-copy reads** — search traverses the native graph directly without marshalling the index into Dart
 
 Core concurrency model:
 
