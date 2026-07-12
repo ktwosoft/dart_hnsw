@@ -2,12 +2,14 @@
 ///
 /// Provides high-performance approximate nearest neighbor search through
 /// native [hnswlib](https://github.com/nmslib/hnswlib) with:
-/// - Shared in-process indexes — one native context per canonical path
+/// - Pure in-memory indexes — no filesystem dependency
+/// - Shared in-process contexts — one native context per collection name
 /// - Reader-writer locking for safe multi-isolate concurrency
-/// - Cross-process file locking for exclusive mutation
-/// - Explicit `checkpoint()` persistence
+/// - `checkpoint()` returns raw bytes so the caller controls storage
+/// - `load()` restores from bytes — store them anywhere (FS, DB, blob, etc.)
 ///
 /// Supports `l2`, `innerProduct`, and `cosine` distance metrics.
+/// Native assets are configured for macOS, Linux, Windows, iOS, and Android.
 // ignore_for_file: dangling_library_doc_comments
 
 export 'src/hnsw_index.dart'
@@ -21,7 +23,6 @@ export 'src/hnsw_index.dart'
         HnswOpenException,
         HnswDimensionMismatchException,
         HnswCapacityExceededException,
-        HnswConcurrentProcessException,
         HnswLoadException,
         HnswCheckpointException,
         HnswZeroVectorException,

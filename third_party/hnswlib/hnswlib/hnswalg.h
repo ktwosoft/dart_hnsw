@@ -6,6 +6,7 @@
 #include <random>
 #include <stdlib.h>
 #include <assert.h>
+#include <limits>
 #include <unordered_set>
 #include <list>
 #include <memory>
@@ -72,17 +73,6 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
 
     HierarchicalNSW(SpaceInterface<dist_t> *s) {
-    }
-
-
-    HierarchicalNSW(
-        SpaceInterface<dist_t> *s,
-        const std::string &location,
-        bool nmslib = false,
-        size_t max_elements = 0,
-        bool allow_replace_deleted = false)
-        : allow_replace_deleted_(allow_replace_deleted) {
-        loadIndex(location, s, max_elements);
     }
 
 
@@ -682,9 +672,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         return size;
     }
 
-    void saveIndex(const std::string &location) {
-        std::ofstream output(location, std::ios::binary);
-
+    void saveIndex(std::ostream &output) {
         writeBinaryPOD(output, offsetLevel0_);
         writeBinaryPOD(output, max_elements_);
         writeBinaryPOD(output, cur_element_count);
@@ -708,28 +696,33 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             if (linkListSize)
                 output.write(linkLists_[i], linkListSize);
         }
-        output.close();
     }
 
 
-    void loadIndex(const std::string &location, SpaceInterface<dist_t> *s, size_t max_elements_i = 0) {
-        std::ifstream input(location, std::ios::binary);
-
-        if (!input.is_open())
-            throw std::runtime_error("Cannot open file");
-
+    void loadIndex(std::istream &input, SpaceInterface<dist_t> *s, size_t max_elements_i = 0) {
         clear();
-        // get file size:
+
+        input.clear();
         input.seekg(0, input.end);
-        std::streampos total_filesize = input.tellg();
+        const std::streampos total_filesize = input.tellg();
+        if (total_filesize < 0) {
+            throw std::runtime_error("Cannot determine index size");
+        }
         input.seekg(0, input.beg);
+        if (!input) {
+            throw std::runtime_error("Cannot seek index data");
+        }
 
         readBinaryPOD(input, offsetLevel0_);
         readBinaryPOD(input, max_elements_);
         readBinaryPOD(input, cur_element_count);
 
+        if (max_elements_ == 0 || cur_element_count > max_elements_) {
+            throw std::runtime_error("Invalid element counts in index data");
+        }
+
         size_t max_elements = max_elements_i;
-        if (max_elements < cur_element_count)
+        if (max_elements == 0 || max_elements < cur_element_count)
             max_elements = max_elements_;
         max_elements_ = max_elements;
         readBinaryPOD(input, size_data_per_element_);
@@ -744,43 +737,101 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         readBinaryPOD(input, mult_);
         readBinaryPOD(input, ef_construction_);
 
+        const size_t max_size = std::numeric_limits<size_t>::max();
+        if (maxM_ == 0 || maxM0_ == 0 || M_ == 0 ||
+            maxM_ > (max_size - sizeof(linklistsizeint)) / sizeof(tableint) ||
+            maxM0_ > (max_size - sizeof(linklistsizeint)) / sizeof(tableint) ||
+            !std::isfinite(mult_) || mult_ <= 0.0 || ef_construction_ == 0) {
+            throw std::runtime_error("Invalid graph parameters in index data");
+        }
+
         data_size_ = s->get_data_size();
         fstdistfunc_ = s->get_dist_func();
         dist_func_param_ = s->get_dist_func_param();
 
-        auto pos = input.tellg();
+        size_links_per_element_ = maxM_ * sizeof(tableint) + sizeof(linklistsizeint);
+        size_links_level0_ = maxM0_ * sizeof(tableint) + sizeof(linklistsizeint);
+        if (size_links_level0_ > max_size - data_size_ ||
+            size_links_level0_ + data_size_ > max_size - sizeof(labeltype)) {
+            throw std::runtime_error("Invalid data size in index data");
+        }
+        const size_t expected_data_size =
+            size_links_level0_ + data_size_ + sizeof(labeltype);
+        if (offsetLevel0_ != 0 || offsetData_ != size_links_level0_ ||
+            label_offset_ != offsetData_ + data_size_) {
+            throw std::runtime_error("Invalid index layout");
+        }
+        if (size_data_per_element_ != expected_data_size) {
+            throw std::runtime_error("Index dimensions do not match index data");
+        }
 
-        /// Optional - check if index is ok:
-        input.seekg(cur_element_count * size_data_per_element_, input.cur);
+        const std::streampos data_position = input.tellg();
+        if (data_position < 0 ||
+            cur_element_count >
+                std::numeric_limits<size_t>::max() / size_data_per_element_) {
+            throw std::runtime_error("Invalid data size in index data");
+        }
+        const size_t level0_size = cur_element_count * size_data_per_element_;
+        const std::streamoff remaining = total_filesize - data_position;
+        if (remaining < 0 ||
+            static_cast<unsigned long long>(remaining) < level0_size) {
+            throw std::runtime_error("Index seems to be truncated");
+        }
+
+        if (cur_element_count == 0) {
+            if (maxlevel_ != -1) {
+                throw std::runtime_error("Invalid empty index state");
+            }
+        } else if (maxlevel_ < 0 || enterpoint_node_ >= cur_element_count) {
+            throw std::runtime_error("Invalid entry point in index data");
+        }
+
+        // Validate every variable-sized section before allocating or copying it.
+        input.seekg(static_cast<std::streamoff>(level0_size), input.cur);
+        if (!input) {
+            throw std::runtime_error("Invalid data section in index data");
+        }
         for (size_t i = 0; i < cur_element_count; i++) {
-            if (input.tellg() < 0 || input.tellg() >= total_filesize) {
-                throw std::runtime_error("Index seems to be corrupted or unsupported");
+            const std::streampos link_size_position = input.tellg();
+            if (link_size_position < 0 ||
+                total_filesize - link_size_position <
+                    static_cast<std::streamoff>(sizeof(linklistsizeint))) {
+                throw std::runtime_error("Index seems to be truncated");
             }
 
             unsigned int linkListSize;
             readBinaryPOD(input, linkListSize);
-            if (linkListSize != 0) {
-                input.seekg(linkListSize, input.cur);
+            if (linkListSize == 0) continue;
+
+            if (linkListSize % size_links_per_element_ != 0) {
+                throw std::runtime_error("Invalid link list size in index data");
+            }
+            const size_t level = linkListSize / size_links_per_element_;
+            if (level == 0 || level > static_cast<size_t>(maxlevel_) ||
+                total_filesize - input.tellg() <
+                    static_cast<std::streamoff>(linkListSize)) {
+                throw std::runtime_error("Invalid link list in index data");
+            }
+            input.seekg(static_cast<std::streamoff>(linkListSize), input.cur);
+            if (!input) {
+                throw std::runtime_error("Invalid link list in index data");
             }
         }
 
-        // throw exception if it either corrupted or old index
-        if (input.tellg() != total_filesize)
+        if (input.tellg() != total_filesize) {
             throw std::runtime_error("Index seems to be corrupted or unsupported");
+        }
 
         input.clear();
-        /// Optional check end
+        input.seekg(data_position, input.beg);
 
-        input.seekg(pos, input.beg);
-
+        if (max_elements > max_size / size_data_per_element_) {
+            throw std::runtime_error("Index allocation size is too large");
+        }
         data_level0_memory_ = (char *) malloc(max_elements * size_data_per_element_);
         if (data_level0_memory_ == nullptr)
             throw std::runtime_error("Not enough memory: loadIndex failed to allocate level0");
         input.read(data_level0_memory_, cur_element_count * size_data_per_element_);
-
-        size_links_per_element_ = maxM_ * sizeof(tableint) + sizeof(linklistsizeint);
-
-        size_links_level0_ = maxM0_ * sizeof(tableint) + sizeof(linklistsizeint);
         std::vector<std::mutex>(max_elements).swap(link_list_locks_);
         std::vector<std::mutex>(MAX_LABEL_OPERATION_LOCKS).swap(label_op_locks_);
 
@@ -805,6 +856,37 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                 if (linkLists_[i] == nullptr)
                     throw std::runtime_error("Not enough memory: loadIndex failed to allocate linklist");
                 input.read(linkLists_[i], linkListSize);
+                if (!input)
+                    throw std::runtime_error("Index seems to be truncated");
+            }
+        }
+
+        // Validate counts and neighbors before making the loaded graph
+        // available to search or mutation operations.
+        auto validate_link_list = [this](linklistsizeint *link_list,
+                                          size_t max_links,
+                                          tableint internal_id) {
+            const size_t count = getListCount(link_list);
+            if (count > max_links)
+                throw std::runtime_error("Invalid link count in index data");
+
+            const tableint *neighbors = (const tableint *)(link_list + 1);
+            std::unordered_set<tableint> seen;
+            seen.reserve(count);
+            for (size_t j = 0; j < count; j++) {
+                const tableint neighbor = neighbors[j];
+                if (neighbor >= cur_element_count || neighbor == internal_id ||
+                    !seen.insert(neighbor).second) {
+                    throw std::runtime_error("Invalid link target in index data");
+                }
+            }
+        };
+
+        for (size_t i = 0; i < cur_element_count; i++) {
+            validate_link_list(get_linklist0(i), maxM0_, static_cast<tableint>(i));
+            for (int level = 1; level <= element_levels_[i]; level++) {
+                validate_link_list(get_linklist(i, level), maxM_,
+                                   static_cast<tableint>(i));
             }
         }
 
@@ -814,10 +896,6 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                 if (allow_replace_deleted_) deleted_elements.insert(i);
             }
         }
-
-        input.close();
-
-        return;
     }
 
 

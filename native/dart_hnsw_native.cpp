@@ -1,24 +1,15 @@
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
-#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
-
-#ifdef _WIN32
-#define NOMINMAX
-#include <windows.h>
-#else
-#include <dirent.h>
-#include <fcntl.h>
-#include <unistd.h>
-#endif
 
 #include "hnswlib.h"
 
@@ -33,164 +24,13 @@ enum HnswErrorCode {
   HNSW_ERR_NULL_ARG = -1,
   HNSW_ERR_INVALID_ARG = -2,
   HNSW_ERR_CONFIG_MISMATCH = -3,
-  HNSW_ERR_LOCKED_PROCESS = -4,
   HNSW_ERR_LOAD_FAILED = -5,
   HNSW_ERR_SAVE_FAILED = -6,
-  HNSW_ERR_RENAME_FAILED = -7,
   HNSW_ERR_ZERO_VECTOR = -8,
   HNSW_ERR_HNSWLIB = -10,
 };
 
 namespace {
-
-#ifdef _WIN32
-using LockHandle = HANDLE;
-constexpr LockHandle kInvalidLockHandle = INVALID_HANDLE_VALUE;
-#else
-using LockHandle = int;
-constexpr LockHandle kInvalidLockHandle = -1;
-#endif
-
-static bool is_valid_lock_handle(LockHandle handle) {
-#ifdef _WIN32
-  return handle != nullptr && handle != INVALID_HANDLE_VALUE;
-#else
-  return handle >= 0;
-#endif
-}
-
-static void remove_file_if_present(const std::filesystem::path& path) {
-  std::error_code ec;
-  std::filesystem::remove(path, ec);
-}
-
-static LockHandle acquire_process_lock(const std::filesystem::path& lock_path) {
-#ifdef _WIN32
-  HANDLE handle = CreateFileW(
-      lock_path.c_str(), GENERIC_READ | GENERIC_WRITE,
-      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-      OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (handle == INVALID_HANDLE_VALUE) return kInvalidLockHandle;
-
-  OVERLAPPED overlapped{};
-  if (!LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
-                  0, MAXDWORD, MAXDWORD, &overlapped)) {
-    CloseHandle(handle);
-    return kInvalidLockHandle;
-  }
-  return handle;
-#else
-  int fd = open(lock_path.c_str(), O_CREAT | O_RDWR, 0666);
-  if (fd < 0) return kInvalidLockHandle;
-
-  struct flock fl {};
-  fl.l_type = F_WRLCK;
-  fl.l_whence = SEEK_SET;
-  fl.l_start = 0;
-  fl.l_len = 0;
-
-  if (fcntl(fd, F_SETLK, &fl) != 0) {
-    close(fd);
-    return kInvalidLockHandle;
-  }
-  return fd;
-#endif
-}
-
-static void release_process_lock(LockHandle handle) {
-  if (!is_valid_lock_handle(handle)) return;
-#ifdef _WIN32
-  OVERLAPPED overlapped{};
-  UnlockFileEx(handle, 0, MAXDWORD, MAXDWORD, &overlapped);
-  CloseHandle(handle);
-#else
-  struct flock fl {};
-  fl.l_type = F_UNLCK;
-  fl.l_whence = SEEK_SET;
-  fl.l_start = 0;
-  fl.l_len = 0;
-  fcntl(handle, F_SETLK, &fl);
-  close(handle);
-#endif
-}
-
-static bool sync_file(const std::filesystem::path& path) {
-#ifdef _WIN32
-  HANDLE handle = CreateFileW(path.c_str(), GENERIC_WRITE,
-                              FILE_SHARE_READ | FILE_SHARE_WRITE |
-                                  FILE_SHARE_DELETE,
-                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
-                              nullptr);
-  if (handle == INVALID_HANDLE_VALUE) return false;
-  bool ok = FlushFileBuffers(handle) != 0;
-  CloseHandle(handle);
-  return ok;
-#else
-  int fd = open(path.c_str(), O_RDONLY);
-  if (fd < 0) return false;
-#ifdef __APPLE__
-  bool ok = fcntl(fd, F_FULLFSYNC) == 0;
-#else
-  bool ok = fsync(fd) == 0;
-#endif
-  close(fd);
-  return ok;
-#endif
-}
-
-static bool sync_directory_best_effort(const std::filesystem::path& path) {
-#ifdef _WIN32
-  (void)path;
-  return true;
-#else
-  DIR* dir = opendir(path.empty() ? "." : path.c_str());
-  if (dir == nullptr) return false;
-  const int dir_fd = dirfd(dir);
-#ifdef __APPLE__
-  const bool ok = dir_fd >= 0 && fcntl(dir_fd, F_FULLFSYNC) == 0;
-#else
-  const bool ok = dir_fd >= 0 && fsync(dir_fd) == 0;
-#endif
-  closedir(dir);
-  return ok;
-#endif
-}
-
-static bool replace_file(const std::filesystem::path& from,
-                         const std::filesystem::path& to) {
-#ifdef _WIN32
-  if (std::filesystem::exists(to)) {
-    if (ReplaceFileW(to.c_str(), from.c_str(), nullptr,
-                     REPLACEFILE_IGNORE_MERGE_ERRORS, nullptr,
-                     nullptr) != 0) {
-      return true;
-    }
-  }
-
-  return MoveFileExW(from.c_str(), to.c_str(),
-                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
-#else
-  return std::rename(from.c_str(), to.c_str()) == 0;
-#endif
-}
-
-static std::string canonicalize_path(const char* raw_path) {
-  std::filesystem::path path(raw_path);
-  std::error_code ec;
-
-  auto canonical = std::filesystem::weakly_canonical(path, ec);
-  if (!ec) {
-    return canonical.string();
-  }
-
-  ec.clear();
-  auto absolute = std::filesystem::absolute(path, ec);
-  if (!ec) {
-    return absolute.lexically_normal().string();
-  }
-
-  return path.lexically_normal().string();
-}
 
 static float vector_norm(const float* values, int dim) {
   float sum = 0.0f;
@@ -210,10 +50,13 @@ static void normalize_vector(float* values, int dim) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Shared context — keyed by collection name (not file path)
+// ---------------------------------------------------------------------------
+
 struct SharedHnswContext {
   uint64_t id = 0;
-  std::string canonical_path;
-  std::string lock_file_path;
+  std::string collection_name;
 
   std::shared_mutex rw_lock;
 
@@ -228,15 +71,9 @@ struct SharedHnswContext {
   int metric = 0;
   bool allow_replace_deleted = true;
 
-  LockHandle lock_handle = kInvalidLockHandle;
-
   ~SharedHnswContext() {
     delete index;
     delete space;
-    release_process_lock(lock_handle);
-    if (!lock_file_path.empty()) {
-      remove_file_if_present(std::filesystem::path(lock_file_path));
-    }
   }
 };
 
@@ -247,7 +84,7 @@ struct ContextHandle {
 static std::mutex registry_mutex;
 static std::unordered_map<std::string, std::weak_ptr<SharedHnswContext>>
     registry;
-static uint64_t next_id = 1;
+static std::atomic<uint64_t> next_id{1};
 
 static std::shared_ptr<SharedHnswContext> get_context(void* handle) {
   if (handle == nullptr) return {};
@@ -259,22 +96,23 @@ static std::shared_ptr<SharedHnswContext> get_context(void* handle) {
 
 extern "C" {
 
-HNSW_EXPORT int hnsw_abi_version() { return 1; }
+HNSW_EXPORT int hnsw_abi_version() { return 2; }
 
-HNSW_EXPORT void* hnsw_open(const char* path,
-                            int dimensions,
-                            int max_elements,
-                            int m,
-                            int ef_construction,
-                            int ef_search,
-                            int metric,
-                            int allow_replace_deleted,
-                            int reserved_open_flags,
-                            int* error_code) {
+// ---------------------------------------------------------------------------
+// hnsw_create — create a new in-memory index (no file path)
+// ---------------------------------------------------------------------------
+
+HNSW_EXPORT void* hnsw_create(const char* collection_name,
+                              int dimensions,
+                              int max_elements,
+                              int m,
+                              int ef_construction,
+                              int ef_search,
+                              int metric,
+                              int allow_replace_deleted,
+                              int* error_code) {
   try {
-    (void)reserved_open_flags;
-
-    if (path == nullptr) {
+    if (collection_name == nullptr) {
       if (error_code) *error_code = HNSW_ERR_NULL_ARG;
       return nullptr;
     }
@@ -286,17 +124,16 @@ HNSW_EXPORT void* hnsw_open(const char* path,
       return nullptr;
     }
 
-    const std::string canonical = canonicalize_path(path);
+    const std::string name(collection_name);
 
     {
       std::lock_guard<std::mutex> lock(registry_mutex);
-      auto it = registry.find(canonical);
+      auto it = registry.find(name);
       if (it != registry.end()) {
         auto ctx = it->second.lock();
         if (ctx) {
           if (ctx->dimensions != dimensions || ctx->metric != metric ||
-              ctx->allow_replace_deleted !=
-                  (allow_replace_deleted != 0)) {
+              ctx->allow_replace_deleted != (allow_replace_deleted != 0)) {
             if (error_code) *error_code = HNSW_ERR_CONFIG_MISMATCH;
             return nullptr;
           }
@@ -310,20 +147,9 @@ HNSW_EXPORT void* hnsw_open(const char* path,
       }
     }
 
-    const auto canonical_path = std::filesystem::path(canonical);
-    const auto lock_path =
-        std::filesystem::path(canonical + ".lock");
-    const auto lock_handle = acquire_process_lock(lock_path);
-    if (!is_valid_lock_handle(lock_handle)) {
-      if (error_code) *error_code = HNSW_ERR_LOCKED_PROCESS;
-      return nullptr;
-    }
-
     auto ctx = std::make_shared<SharedHnswContext>();
-    ctx->id = next_id++;
-    ctx->canonical_path = canonical;
-    ctx->lock_file_path = lock_path.string();
-    ctx->lock_handle = lock_handle;
+    ctx->id = next_id.fetch_add(1, std::memory_order_relaxed);
+    ctx->collection_name = name;
     ctx->dimensions = dimensions;
     ctx->max_elements = max_elements;
     ctx->m = m;
@@ -338,20 +164,137 @@ HNSW_EXPORT void* hnsw_open(const char* path,
       ctx->space = new hnswlib::L2Space(dimensions);
     }
 
-    std::error_code ec;
-    const bool file_exists = std::filesystem::exists(canonical_path, ec);
+    try {
+      ctx->index = new hnswlib::HierarchicalNSW<float>(
+          ctx->space, max_elements, m, ef_construction, 100,
+          ctx->allow_replace_deleted);
+    } catch (...) {
+      delete ctx->space;
+      ctx->space = nullptr;
+      if (error_code) *error_code = HNSW_ERR_HNSWLIB;
+      return nullptr;
+    }
+
+    ctx->index->setEf(ef_search);
+
+    {
+      std::lock_guard<std::mutex> lock(registry_mutex);
+      // Another thread may have finished the same first open while this
+      // context was being constructed. Publish only one context per name.
+      auto it = registry.find(name);
+      if (it != registry.end()) {
+        auto existing = it->second.lock();
+        if (existing) {
+          if (existing->dimensions != dimensions ||
+              existing->metric != metric ||
+              existing->allow_replace_deleted !=
+                  (allow_replace_deleted != 0)) {
+            if (error_code) *error_code = HNSW_ERR_CONFIG_MISMATCH;
+            return nullptr;
+          }
+
+          auto* handle = new ContextHandle();
+          handle->ctx = std::move(existing);
+          if (error_code) *error_code = HNSW_OK;
+          return handle;
+        }
+      }
+      registry[name] = ctx;
+    }
+
+    auto* handle = new ContextHandle();
+    handle->ctx = std::move(ctx);
+    if (error_code) *error_code = HNSW_OK;
+    return handle;
+  } catch (...) {
+    if (error_code) *error_code = HNSW_ERR_HNSWLIB;
+    return nullptr;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// hnsw_load — create an index from a byte buffer (same binary format as
+// what hnsw_checkpoint returns)
+// ---------------------------------------------------------------------------
+
+HNSW_EXPORT void* hnsw_load(const char* collection_name,
+                            const uint8_t* data,
+                            int data_size,
+                            int dimensions,
+                            int max_elements,
+                            int m,
+                            int ef_construction,
+                            int ef_search,
+                            int metric,
+                            int allow_replace_deleted,
+                            int* error_code) {
+  try {
+    if (collection_name == nullptr || data == nullptr) {
+      if (error_code) *error_code = HNSW_ERR_NULL_ARG;
+      return nullptr;
+    }
+
+    if (dimensions <= 0 || max_elements <= 0 || m <= 0 ||
+        ef_construction <= 0 || ef_search <= 0 ||
+        (metric != 0 && metric != 1 && metric != 2) || data_size <= 0) {
+      if (error_code) *error_code = HNSW_ERR_INVALID_ARG;
+      return nullptr;
+    }
+
+    const std::string name(collection_name);
+
+    {
+      std::lock_guard<std::mutex> lock(registry_mutex);
+      auto it = registry.find(name);
+      if (it != registry.end()) {
+        auto ctx = it->second.lock();
+        if (ctx) {
+          if (ctx->dimensions != dimensions || ctx->metric != metric ||
+              ctx->allow_replace_deleted != (allow_replace_deleted != 0)) {
+            if (error_code) *error_code = HNSW_ERR_CONFIG_MISMATCH;
+            return nullptr;
+          }
+
+          auto* handle = new ContextHandle();
+          handle->ctx = std::move(ctx);
+          if (error_code) *error_code = HNSW_OK;
+          return handle;
+        }
+        registry.erase(it);
+      }
+    }
+
+    auto ctx = std::make_shared<SharedHnswContext>();
+    ctx->id = next_id.fetch_add(1, std::memory_order_relaxed);
+    ctx->collection_name = name;
+    ctx->dimensions = dimensions;
+    ctx->max_elements = max_elements;
+    ctx->m = m;
+    ctx->ef_construction = ef_construction;
+    ctx->ef_search = ef_search;
+    ctx->metric = metric;
+    ctx->allow_replace_deleted = (allow_replace_deleted != 0);
+
+    if (metric == 1) {
+      ctx->space = new hnswlib::InnerProductSpace(dimensions);
+    } else {
+      ctx->space = new hnswlib::L2Space(dimensions);
+    }
 
     try {
-      if (file_exists) {
-        ctx->index = new hnswlib::HierarchicalNSW<float>(
-            ctx->space, canonical, false, max_elements,
-            ctx->allow_replace_deleted);
-      } else {
-        ctx->index = new hnswlib::HierarchicalNSW<float>(
-            ctx->space, max_elements, m, ef_construction, 100,
-            ctx->allow_replace_deleted);
+      ctx->index = new hnswlib::HierarchicalNSW<float>(
+          ctx->space, ctx->allow_replace_deleted);
+      {
+        std::string buf(data, data + data_size);
+        std::istringstream iss(std::move(buf), std::ios::in | std::ios::binary);
+        ctx->index->loadIndex(iss, ctx->space,
+                              static_cast<size_t>(max_elements));
       }
     } catch (...) {
+      delete ctx->index;
+      ctx->index = nullptr;
+      delete ctx->space;
+      ctx->space = nullptr;
       if (error_code) *error_code = HNSW_ERR_LOAD_FAILED;
       return nullptr;
     }
@@ -360,7 +303,27 @@ HNSW_EXPORT void* hnsw_open(const char* path,
 
     {
       std::lock_guard<std::mutex> lock(registry_mutex);
-      registry[canonical] = ctx;
+      // Another thread may have finished the same first open while this
+      // context was being loaded. Publish only one context per name.
+      auto it = registry.find(name);
+      if (it != registry.end()) {
+        auto existing = it->second.lock();
+        if (existing) {
+          if (existing->dimensions != dimensions ||
+              existing->metric != metric ||
+              existing->allow_replace_deleted !=
+                  (allow_replace_deleted != 0)) {
+            if (error_code) *error_code = HNSW_ERR_CONFIG_MISMATCH;
+            return nullptr;
+          }
+
+          auto* handle = new ContextHandle();
+          handle->ctx = std::move(existing);
+          if (error_code) *error_code = HNSW_OK;
+          return handle;
+        }
+      }
+      registry[name] = ctx;
     }
 
     auto* handle = new ContextHandle();
@@ -571,33 +534,54 @@ HNSW_EXPORT int hnsw_get_ef_search(void* handle) {
   return ctx->ef_search;
 }
 
-HNSW_EXPORT int hnsw_checkpoint(void* handle) {
+// ---------------------------------------------------------------------------
+// hnsw_checkpoint — serialize the index to a byte buffer.
+//
+// Two-phase API:
+//   1. Call hnsw_checkpoint(handle, nullptr, 0, &size) to get the size.
+//   2. Allocate a buffer of `size` bytes on the Dart side.
+//   3. Call hnsw_checkpoint(handle, buffer, size, &written) to fill it.
+//
+// Returns HNSW_OK on success. The caller owns the buffer.
+// ---------------------------------------------------------------------------
+
+HNSW_EXPORT int hnsw_checkpoint(void* handle,
+                                uint8_t* out_buffer,
+                                int buffer_size,
+                                int* out_written) {
   try {
     auto ctx = get_context(handle);
     if (!ctx || !ctx->index) return HNSW_ERR_NULL_ARG;
 
     std::unique_lock<std::shared_mutex> lock(ctx->rw_lock);
 
-    const auto index_path = std::filesystem::path(ctx->canonical_path);
-    const auto tmp_path =
-        std::filesystem::path(ctx->canonical_path + ".tmp");
-
+    std::string serialized;
     try {
-      ctx->index->saveIndex(tmp_path.string());
+      std::ostringstream oss(std::ios::out | std::ios::binary);
+      ctx->index->saveIndex(oss);
+      serialized = oss.str();
     } catch (...) {
       return HNSW_ERR_SAVE_FAILED;
     }
 
-    if (!sync_file(tmp_path)) {
-      remove_file_if_present(tmp_path);
-      return HNSW_ERR_SAVE_FAILED;
+    const auto total = static_cast<int>(serialized.size());
+
+    if (out_buffer == nullptr) {
+      // Phase 1: caller wants the size.
+      if (out_written) *out_written = total;
+      return HNSW_OK;
     }
 
-    if (!replace_file(tmp_path, index_path)) {
-      remove_file_if_present(tmp_path);
-      return HNSW_ERR_RENAME_FAILED;
+    // Phase 2: caller provided a buffer.
+    if (buffer_size < total) {
+      // Let a caller retry if another handle grew the index between the size
+      // query and this fill operation.
+      if (out_written) *out_written = total;
+      return HNSW_ERR_INVALID_ARG;
     }
-    sync_directory_best_effort(index_path.parent_path());
+
+    std::memcpy(out_buffer, serialized.data(), serialized.size());
+    if (out_written) *out_written = total;
     return HNSW_OK;
   } catch (...) {
     return HNSW_ERR_HNSWLIB;

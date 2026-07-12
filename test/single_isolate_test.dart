@@ -24,20 +24,18 @@ void main() {
   });
 
   // -----------------------------------------------------------------------
-  // T1: open → upsert → search → close
+  // T1: create → upsert → search → close
   // -----------------------------------------------------------------------
   test(
-    'T1: open → upsert(1,[1,0,0,0]) → search([1,0,0,0],k=1) → expect id 1 → close',
+    'T1: create → upsert(1,[1,0,0,0]) → search([1,0,0,0],k=1) → expect id 1 → close',
     () {
-      final path = testIndexPath('t1_basic_upsert_search.index');
-      cleanTestIndex(path);
-
+      final name = testCollectionName('t1_basic');
       final errorCode = calloc<Int32>();
-      final pathPtr = path.toNativeUtf8();
+      final namePtr = name.toNativeUtf8();
 
       try {
-        final handle = native.hnswOpen(
-          pathPtr,
+        final handle = native.hnswCreate(
+          namePtr,
           4,
           1000,
           16,
@@ -45,7 +43,6 @@ void main() {
           64,
           0,
           1,
-          0,
           errorCode,
         );
         expect(errorCode.value, equals(0));
@@ -92,8 +89,7 @@ void main() {
         expect(native.hnswClose(handle), equals(0));
       } finally {
         calloc.free(errorCode);
-        calloc.free(pathPtr);
-        cleanTestIndex(path);
+        calloc.free(namePtr);
       }
     },
   );
@@ -102,12 +98,14 @@ void main() {
   // T2: dimension mismatch → ArgumentError (Dart guard)
   // -----------------------------------------------------------------------
   test(
-    'T2: open with dim=4 → upsert vector of length 5 → expect ArgumentError',
+    'T2: create with dim=4 → upsert vector of length 5 → expect ArgumentError',
     () {
-      final path = testIndexPath('t2_dim_mismatch.index');
-      cleanTestIndex(path);
-
-      final index = HnswIndex.open(path: path, dimensions: 4, maxElements: 100);
+      final name = testCollectionName('t2_dim_mismatch');
+      final index = HnswIndex.create(
+        collectionName: name,
+        dimensions: 4,
+        maxElements: 100,
+      );
 
       expect(
         () => index.upsert(1, [1, 2, 3, 4, 5]),
@@ -115,15 +113,16 @@ void main() {
       );
 
       index.close();
-      cleanTestIndex(path);
     },
   );
 
   test('T2b: close() is idempotent and methods throw after close', () {
-    final path = testIndexPath('t2b_closed_handle.index');
-    cleanTestIndex(path);
-
-    final index = HnswIndex.open(path: path, dimensions: 4, maxElements: 100);
+    final name = testCollectionName('t2b_closed_handle');
+    final index = HnswIndex.create(
+      collectionName: name,
+      dimensions: 4,
+      maxElements: 100,
+    );
 
     index.upsert(1, [1, 0, 0, 0]);
     index.close();
@@ -133,8 +132,19 @@ void main() {
     expect(() => index.upsert(2, [0, 1, 0, 0]), throwsA(isA<StateError>()));
     expect(() => index.checkpoint(), throwsA(isA<StateError>()));
     expect(() => index.elementCount, throwsA(isA<StateError>()));
+  });
 
-    cleanTestIndex(path);
+  test('T2d: closed methods reject before validating their arguments', () {
+    final index = HnswIndex.create(
+      collectionName: testCollectionName('t2d_closed_argument_order'),
+      dimensions: 4,
+      maxElements: 100,
+    );
+    index.close();
+
+    expect(() => index.upsert(1, [1, 2, 3]), throwsA(isA<StateError>()));
+    expect(() => index.upsertBatch(const []), throwsA(isA<StateError>()));
+    expect(() => index.search([1, 2, 3]), throwsA(isA<StateError>()));
   });
 
   test('T2c: sidecar dynamic library bindings work when forced', () {
@@ -149,15 +159,13 @@ void main() {
       libraryPath: sidecarPath,
       preferDynamicLibrary: true,
     );
-    final path = testIndexPath('t2c_dynamic_bindings.index');
-    cleanTestIndex(path);
-
+    final name = testCollectionName('t2c_dynamic');
     final errorCode = calloc<Int32>();
-    final pathPtr = path.toNativeUtf8();
+    final namePtr = name.toNativeUtf8();
 
     try {
-      final handle = dynamicNative.hnswOpen(
-        pathPtr,
+      final handle = dynamicNative.hnswCreate(
+        namePtr,
         4,
         100,
         16,
@@ -165,7 +173,6 @@ void main() {
         64,
         0,
         1,
-        0,
         errorCode,
       );
       expect(errorCode.value, equals(0));
@@ -181,8 +188,7 @@ void main() {
       expect(dynamicNative.hnswRegistrySize(), equals(0));
     } finally {
       calloc.free(errorCode);
-      calloc.free(pathPtr);
-      cleanTestIndex(path);
+      calloc.free(namePtr);
     }
   });
 
@@ -190,15 +196,13 @@ void main() {
   // T3: upsert duplicate label → search reflects updated vector
   // -----------------------------------------------------------------------
   test('T3: upsert duplicate label → search reflects updated vector', () {
-    final path = testIndexPath('t3_upsert_duplicate.index');
-    cleanTestIndex(path);
-
+    final name = testCollectionName('t3_upsert_duplicate');
     final errorCode = calloc<Int32>();
-    final pathPtr = path.toNativeUtf8();
+    final namePtr = name.toNativeUtf8();
 
     try {
-      final handle = native.hnswOpen(
-        pathPtr,
+      final handle = native.hnswCreate(
+        namePtr,
         4,
         1000,
         16,
@@ -206,7 +210,6 @@ void main() {
         64,
         0,
         1,
-        0,
         errorCode,
       );
       expect(errorCode.value, equals(0));
@@ -261,8 +264,7 @@ void main() {
       expect(native.hnswClose(handle), equals(0));
     } finally {
       calloc.free(errorCode);
-      calloc.free(pathPtr);
-      cleanTestIndex(path);
+      calloc.free(namePtr);
     }
   });
 
@@ -270,15 +272,13 @@ void main() {
   // T4: markDeleted(id) → search no longer returns id
   // -----------------------------------------------------------------------
   test('T4: markDeleted(id) → search no longer returns id', () {
-    final path = testIndexPath('t4_mark_deleted.index');
-    cleanTestIndex(path);
-
+    final name = testCollectionName('t4_mark_deleted');
     final errorCode = calloc<Int32>();
-    final pathPtr = path.toNativeUtf8();
+    final namePtr = name.toNativeUtf8();
 
     try {
-      final handle = native.hnswOpen(
-        pathPtr,
+      final handle = native.hnswCreate(
+        namePtr,
         4,
         1000,
         16,
@@ -286,7 +286,6 @@ void main() {
         64,
         0,
         1,
-        0,
         errorCode,
       );
       expect(errorCode.value, equals(0));
@@ -347,8 +346,7 @@ void main() {
       expect(native.hnswClose(handle), equals(0));
     } finally {
       calloc.free(errorCode);
-      calloc.free(pathPtr);
-      cleanTestIndex(path);
+      calloc.free(namePtr);
     }
   });
 
@@ -358,15 +356,13 @@ void main() {
   test(
     'T6: resize(newMax) → maxElements reflects new capacity → upsert beyond old cap works',
     () {
-      final path = testIndexPath('t6_resize.index');
-      cleanTestIndex(path);
-
+      final name = testCollectionName('t6_resize');
       final errorCode = calloc<Int32>();
-      final pathPtr = path.toNativeUtf8();
+      final namePtr = name.toNativeUtf8();
 
       try {
-        final handle = native.hnswOpen(
-          pathPtr,
+        final handle = native.hnswCreate(
+          namePtr,
           4,
           10,
           16,
@@ -374,7 +370,6 @@ void main() {
           64,
           0,
           1,
-          0,
           errorCode,
         );
         expect(errorCode.value, equals(0));
@@ -406,8 +401,7 @@ void main() {
         expect(native.hnswClose(handle), equals(0));
       } finally {
         calloc.free(errorCode);
-        calloc.free(pathPtr);
-        cleanTestIndex(path);
+        calloc.free(namePtr);
       }
     },
   );
@@ -416,15 +410,13 @@ void main() {
   // T7: setEfSearch(32) → efSearch getter returns 32
   // -----------------------------------------------------------------------
   test('T7: setEfSearch(32) → efSearch getter returns 32', () {
-    final path = testIndexPath('t7_ef_search.index');
-    cleanTestIndex(path);
-
+    final name = testCollectionName('t7_ef_search');
     final errorCode = calloc<Int32>();
-    final pathPtr = path.toNativeUtf8();
+    final namePtr = name.toNativeUtf8();
 
     try {
-      final handle = native.hnswOpen(
-        pathPtr,
+      final handle = native.hnswCreate(
+        namePtr,
         4,
         100,
         16,
@@ -432,7 +424,6 @@ void main() {
         64,
         0,
         1,
-        0,
         errorCode,
       );
       expect(errorCode.value, equals(0));
@@ -445,8 +436,7 @@ void main() {
       expect(native.hnswClose(handle), equals(0));
     } finally {
       calloc.free(errorCode);
-      calloc.free(pathPtr);
-      cleanTestIndex(path);
+      calloc.free(namePtr);
     }
   });
 
@@ -454,15 +444,13 @@ void main() {
   // T8: elementCount and maxElements return correct values
   // -----------------------------------------------------------------------
   test('T8: elementCount and maxElements return correct values', () {
-    final path = testIndexPath('t8_counts.index');
-    cleanTestIndex(path);
-
+    final name = testCollectionName('t8_counts');
     final errorCode = calloc<Int32>();
-    final pathPtr = path.toNativeUtf8();
+    final namePtr = name.toNativeUtf8();
 
     try {
-      final handle = native.hnswOpen(
-        pathPtr,
+      final handle = native.hnswCreate(
+        namePtr,
         4,
         500,
         16,
@@ -470,7 +458,6 @@ void main() {
         64,
         0,
         1,
-        0,
         errorCode,
       );
       expect(errorCode.value, equals(0));
@@ -491,8 +478,7 @@ void main() {
       expect(native.hnswClose(handle), equals(0));
     } finally {
       calloc.free(errorCode);
-      calloc.free(pathPtr);
-      cleanTestIndex(path);
+      calloc.free(namePtr);
     }
   });
 }

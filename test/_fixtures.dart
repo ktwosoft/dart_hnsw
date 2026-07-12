@@ -8,7 +8,7 @@ import 'package:test/test.dart';
 import 'package:dart_hnsw/src/native_bindings.dart';
 
 // ---------------------------------------------------------------------------
-// Paths
+// Paths / names
 // ---------------------------------------------------------------------------
 
 String get projectRoot {
@@ -18,12 +18,6 @@ String get projectRoot {
   }
   return cwd;
 }
-
-final Directory _testRoot = Directory.systemTemp.createTempSync(
-  'dart_hnsw_test_',
-);
-
-String testIndexPath(String name) => '${_testRoot.path}/$name';
 
 String builtSidecarLibraryPath() {
   String fileName;
@@ -42,6 +36,15 @@ String builtSidecarLibraryPath() {
   return '$projectRoot/.dart_tool/lib/$fileName';
 }
 
+/// Unique collection name generator — uses a monotonic counter so tests
+/// don't collide on the shared in-process registry.
+int _collectionCounter = 0;
+
+String testCollectionName(String label) {
+  _collectionCounter++;
+  return 'test_${_collectionCounter}_$label';
+}
+
 // ---------------------------------------------------------------------------
 // Pointer helpers
 // ---------------------------------------------------------------------------
@@ -53,18 +56,20 @@ bool isNullPointer(Pointer pointer) => pointer.address == 0;
 // ---------------------------------------------------------------------------
 
 class WorkerConfig {
-  final String path;
+  final String collectionName;
   final int workerId;
   final int iterations;
   final int sleepMs;
   final SendPort replyPort;
+  final SendPort? cleanupPort;
 
   WorkerConfig({
-    required this.path,
+    required this.collectionName,
     required this.workerId,
     required this.iterations,
     required this.sleepMs,
     required this.replyPort,
+    this.cleanupPort,
   });
 }
 
@@ -72,10 +77,19 @@ class WorkerResult {
   final int contextId;
   final int writeCount;
   final String? error;
+  final SendPort? releasePort;
 
-  WorkerResult({required this.contextId, this.writeCount = 0, this.error});
+  WorkerResult({
+    required this.contextId,
+    this.writeCount = 0,
+    this.error,
+    this.releasePort,
+  });
 
-  WorkerResult.error(this.error) : contextId = 0, writeCount = 0;
+  WorkerResult.error(this.error)
+    : contextId = 0,
+      writeCount = 0,
+      releasePort = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -86,33 +100,90 @@ void failWorker(SendPort replyPort, String message) {
   Isolate.exit(replyPort, WorkerResult.error(message));
 }
 
-Pointer<Void> openOrExit(
+Pointer<Void> createOrExit(
   HnswNativeBindings native,
   WorkerConfig config,
   Pointer<Int32> errorCode,
-  Pointer<Utf8> pathPtr,
+  Pointer<Utf8> namePtr,
 ) {
-  final handle = native.hnswOpen(
-    pathPtr,
+  final handle = native.hnswCreate(
+    namePtr,
     4, // dimensions
-    1000, // maxElements
+    10000, // maxElements
     16, // m
     200, // efConstruction
     64, // efSearch
     0, // metric (l2)
     1, // allowReplaceDeleted
-    0, // reservedOpenFlags
     errorCode,
   );
 
   if (isNullPointer(handle)) {
     failWorker(
       config.replyPort,
-      'hnswOpen returned null, errorCode=${errorCode.value}',
+      'hnswCreate returned null, errorCode=${errorCode.value}',
     );
   }
 
   return handle;
+}
+
+void createOnlyWorker(WorkerConfig config) {
+  late final HnswNativeBindings native;
+
+  try {
+    native = HnswNativeBindings();
+  } catch (e) {
+    failWorker(config.replyPort, 'HnswNativeBindings failed: $e');
+    return;
+  }
+
+  final errorCode = calloc<Int32>();
+  final namePtr = config.collectionName.toNativeUtf8();
+  var handedOff = false;
+
+  try {
+    final handle = native.hnswCreate(
+      namePtr,
+      4,
+      100,
+      16,
+      200,
+      64,
+      0,
+      1,
+      errorCode,
+    );
+
+    if (isNullPointer(handle)) {
+      failWorker(
+        config.replyPort,
+        'hnswCreate returned null, errorCode=${errorCode.value}',
+      );
+      return;
+    }
+
+    final id = native.hnswContextId(handle);
+    final releasePort = ReceivePort();
+    releasePort.listen((_) {
+      releasePort.close();
+      native.hnswClose(handle);
+      calloc.free(errorCode);
+      calloc.free(namePtr);
+      config.cleanupPort?.send(null);
+    });
+    handedOff = true;
+    config.replyPort.send(
+      WorkerResult(contextId: id, releasePort: releasePort.sendPort),
+    );
+  } catch (e, st) {
+    failWorker(config.replyPort, 'createOnlyWorker exception: $e\n$st');
+  } finally {
+    if (!handedOff) {
+      calloc.free(errorCode);
+      calloc.free(namePtr);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -130,17 +201,13 @@ void upsertWorker(WorkerConfig config) {
   }
 
   final errorCode = calloc<Int32>();
-  final pathPtr = config.path.toNativeUtf8();
+  final namePtr = config.collectionName.toNativeUtf8();
 
   try {
-    final handle = openOrExit(native, config, errorCode, pathPtr);
+    final handle = createOrExit(native, config, errorCode, namePtr);
 
-    // Each worker gets a unique label range based on its worker id.
-    // (SendPort.hashCode is identical across workers that share one
-    // ReceivePort, so it cannot be used to derive a unique range.)
     final base = config.workerId * 100000;
 
-    // TODO: dont make them colinear (just on x), doesn't work well with cosine
     for (var i = 0; i < config.iterations; i++) {
       final label = base + i;
       final vector = calloc<Float>(4);
@@ -169,7 +236,7 @@ void upsertWorker(WorkerConfig config) {
     failWorker(config.replyPort, 'upsertWorker exception: $e\n$st');
   } finally {
     calloc.free(errorCode);
-    calloc.free(pathPtr);
+    calloc.free(namePtr);
   }
 }
 
@@ -188,10 +255,10 @@ void searchWorker(WorkerConfig config) {
   }
 
   final errorCode = calloc<Int32>();
-  final pathPtr = config.path.toNativeUtf8();
+  final namePtr = config.collectionName.toNativeUtf8();
 
   try {
-    final handle = openOrExit(native, config, errorCode, pathPtr);
+    final handle = createOrExit(native, config, errorCode, namePtr);
 
     for (var i = 0; i < config.iterations; i++) {
       final query = calloc<Float>(4);
@@ -232,7 +299,7 @@ void searchWorker(WorkerConfig config) {
     failWorker(config.replyPort, 'searchWorker exception: $e\n$st');
   } finally {
     calloc.free(errorCode);
-    calloc.free(pathPtr);
+    calloc.free(namePtr);
   }
 }
 
@@ -251,10 +318,10 @@ void mixedUpsertSearchWorker(WorkerConfig config) {
   }
 
   final errorCode = calloc<Int32>();
-  final pathPtr = config.path.toNativeUtf8();
+  final namePtr = config.collectionName.toNativeUtf8();
 
   try {
-    final handle = openOrExit(native, config, errorCode, pathPtr);
+    final handle = createOrExit(native, config, errorCode, namePtr);
     final base = config.workerId * 100000;
     var writeCount = 0;
 
@@ -320,7 +387,7 @@ void mixedUpsertSearchWorker(WorkerConfig config) {
     failWorker(config.replyPort, 'mixedUpsertSearchWorker exception: $e\n$st');
   } finally {
     calloc.free(errorCode);
-    calloc.free(pathPtr);
+    calloc.free(namePtr);
   }
 }
 
@@ -329,23 +396,25 @@ void mixedUpsertSearchWorker(WorkerConfig config) {
 // ---------------------------------------------------------------------------
 
 Future<List<WorkerResult>> spawnWorkers({
-  required String path,
+  required String collectionName,
   required int count,
   required int iterations,
   required int sleepMs,
   required void Function(WorkerConfig) workerFn,
 }) async {
   final receivePort = ReceivePort();
+  final cleanupReceivePort = ReceivePort();
 
   final spawns = <Future<void>>[];
 
   for (var i = 0; i < count; i++) {
     final config = WorkerConfig(
-      path: path,
+      collectionName: collectionName,
       workerId: i + 1,
       iterations: iterations,
       sleepMs: sleepMs,
       replyPort: receivePort.sendPort,
+      cleanupPort: cleanupReceivePort.sendPort,
     );
 
     spawns.add(Isolate.spawn(workerFn, config));
@@ -355,6 +424,17 @@ Future<List<WorkerResult>> spawnWorkers({
 
   final results = await receivePort.take(count).cast<WorkerResult>().toList();
   receivePort.close();
+
+  final heldResults = results
+      .where((result) => result.releasePort != null)
+      .toList(growable: false);
+  for (final result in heldResults) {
+    result.releasePort!.send(null);
+  }
+  if (heldResults.isNotEmpty) {
+    await cleanupReceivePort.take(heldResults.length).toList();
+  }
+  cleanupReceivePort.close();
 
   return results;
 }
@@ -374,17 +454,4 @@ void expectCleanRegistry(HnswNativeBindings native) {
   if (size != 0) {
     fail('Test leaked $size native registry entries');
   }
-}
-
-// ---------------------------------------------------------------------------
-// Cleanup helper — removes test index files
-// ---------------------------------------------------------------------------
-
-void cleanTestIndex(String path) {
-  final file = File(path);
-  if (file.existsSync()) file.deleteSync();
-  final tmp = File('$path.tmp');
-  if (tmp.existsSync()) tmp.deleteSync();
-  final lock = File('$path.lock');
-  if (lock.existsSync()) lock.deleteSync();
 }

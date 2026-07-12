@@ -7,7 +7,7 @@ import 'package:dart_hnsw/src/native_bindings.dart';
 import '_fixtures.dart';
 
 // ---------------------------------------------------------------------------
-// T9–T12, T19: Shared-context / multi-isolate tests
+// T9–T12, T19, T26, T31: Shared-context / multi-isolate tests
 // ---------------------------------------------------------------------------
 
 void main() {
@@ -22,20 +22,18 @@ void main() {
   });
 
   // -----------------------------------------------------------------------
-  // T9: open same path A and B → same contextId; upsert via A, search via B
+  // T9: open same collection A and B → same contextId; upsert via A, search via B
   // -----------------------------------------------------------------------
   test(
-    'T9: open same path A and B → contextId(A) == contextId(B); upsert via A, search via B sees it',
+    'T9: open same collection A and B → contextId(A) == contextId(B); upsert via A, search via B sees it',
     () {
-      final path = testIndexPath('t9_shared_context.index');
-      cleanTestIndex(path);
-
+      final name = testCollectionName('t9_shared_context');
       final errorCode = calloc<Int32>();
-      final pathPtr = path.toNativeUtf8();
+      final namePtr = name.toNativeUtf8();
 
       try {
-        final handleA = native.hnswOpen(
-          pathPtr,
+        final handleA = native.hnswCreate(
+          namePtr,
           4,
           1000,
           16,
@@ -43,14 +41,13 @@ void main() {
           64,
           0,
           1,
-          0,
           errorCode,
         );
         expect(errorCode.value, equals(0));
         expect(isNullPointer(handleA), isFalse);
 
-        final handleB = native.hnswOpen(
-          pathPtr,
+        final handleB = native.hnswCreate(
+          namePtr,
           4,
           1000,
           16,
@@ -58,7 +55,6 @@ void main() {
           64,
           0,
           1,
-          0,
           errorCode,
         );
         expect(errorCode.value, equals(0));
@@ -114,8 +110,7 @@ void main() {
         expect(native.hnswRegistrySize(), equals(0));
       } finally {
         calloc.free(errorCode);
-        calloc.free(pathPtr);
-        cleanTestIndex(path);
+        calloc.free(namePtr);
       }
     },
   );
@@ -129,15 +124,13 @@ void main() {
       const isolateCount = 10;
       const iterationsPerIsolate = 100;
 
-      final path = testIndexPath('t10_many_isolates_upsert.index');
-      cleanTestIndex(path);
-
+      final name = testCollectionName('t10_many_isolates');
       final errorCode = calloc<Int32>();
-      final pathPtr = path.toNativeUtf8();
+      final namePtr = name.toNativeUtf8();
 
       try {
-        final mainHandle = native.hnswOpen(
-          pathPtr,
+        final mainHandle = native.hnswCreate(
+          namePtr,
           4,
           10000,
           16,
@@ -145,14 +138,13 @@ void main() {
           64,
           0,
           1,
-          0,
           errorCode,
         );
         expect(errorCode.value, equals(0));
         final mainId = native.hnswContextId(mainHandle);
 
         final results = await spawnWorkers(
-          path: path,
+          collectionName: name,
           count: isolateCount,
           iterations: iterationsPerIsolate,
           sleepMs: 0,
@@ -174,8 +166,7 @@ void main() {
         expect(native.hnswRegistrySize(), equals(0));
       } finally {
         calloc.free(errorCode);
-        calloc.free(pathPtr);
-        cleanTestIndex(path);
+        calloc.free(namePtr);
       }
     },
   );
@@ -189,15 +180,13 @@ void main() {
       const isolateCount = 20;
       const iterationsPerIsolate = 10;
 
-      final path = testIndexPath('t11_concurrent_search.index');
-      cleanTestIndex(path);
-
+      final name = testCollectionName('t11_concurrent_search');
       final errorCode = calloc<Int32>();
-      final pathPtr = path.toNativeUtf8();
+      final namePtr = name.toNativeUtf8();
 
       try {
-        final mainHandle = native.hnswOpen(
-          pathPtr,
+        final mainHandle = native.hnswCreate(
+          namePtr,
           4,
           1000,
           16,
@@ -205,7 +194,6 @@ void main() {
           64,
           0,
           1,
-          0,
           errorCode,
         );
         expect(errorCode.value, equals(0));
@@ -220,7 +208,7 @@ void main() {
         calloc.free(vector);
 
         final results = await spawnWorkers(
-          path: path,
+          collectionName: name,
           count: isolateCount,
           iterations: iterationsPerIsolate,
           sleepMs: 0,
@@ -233,8 +221,7 @@ void main() {
         expect(native.hnswRegistrySize(), equals(0));
       } finally {
         calloc.free(errorCode);
-        calloc.free(pathPtr);
-        cleanTestIndex(path);
+        calloc.free(namePtr);
       }
     },
   );
@@ -246,15 +233,13 @@ void main() {
     const isolateCount = 20;
     const iterationsPerIsolate = 50;
 
-    final path = testIndexPath('t12_mixed_stress.index');
-    cleanTestIndex(path);
-
+    final name = testCollectionName('t12_mixed_stress');
     final errorCode = calloc<Int32>();
-    final pathPtr = path.toNativeUtf8();
+    final namePtr = name.toNativeUtf8();
 
     try {
-      final mainHandle = native.hnswOpen(
-        pathPtr,
+      final mainHandle = native.hnswCreate(
+        namePtr,
         4,
         10000,
         16,
@@ -262,14 +247,13 @@ void main() {
         64,
         0,
         1,
-        0,
         errorCode,
       );
       expect(errorCode.value, equals(0));
       final mainId = native.hnswContextId(mainHandle);
 
       final results = await spawnWorkers(
-        path: path,
+        collectionName: name,
         count: isolateCount,
         iterations: iterationsPerIsolate,
         sleepMs: 0,
@@ -286,8 +270,7 @@ void main() {
       expect(native.hnswRegistrySize(), equals(0));
     } finally {
       calloc.free(errorCode);
-      calloc.free(pathPtr);
-      cleanTestIndex(path);
+      calloc.free(namePtr);
     }
   });
 
@@ -300,15 +283,13 @@ void main() {
       const isolateCount = 20;
       const iterationsPerIsolate = 10;
 
-      final path = testIndexPath('t19_lifecycle_cleanup.index');
-      cleanTestIndex(path);
-
+      final name = testCollectionName('t19_lifecycle_cleanup');
       final errorCode = calloc<Int32>();
-      final pathPtr = path.toNativeUtf8();
+      final namePtr = name.toNativeUtf8();
 
       try {
-        final mainHandle = native.hnswOpen(
-          pathPtr,
+        final mainHandle = native.hnswCreate(
+          namePtr,
           4,
           10000,
           16,
@@ -316,13 +297,12 @@ void main() {
           64,
           0,
           1,
-          0,
           errorCode,
         );
         expect(errorCode.value, equals(0));
 
         final results = await spawnWorkers(
-          path: path,
+          collectionName: name,
           count: isolateCount,
           iterations: iterationsPerIsolate,
           sleepMs: 0,
@@ -335,8 +315,7 @@ void main() {
         expect(native.hnswRegistrySize(), equals(0));
       } finally {
         calloc.free(errorCode);
-        calloc.free(pathPtr);
-        cleanTestIndex(path);
+        calloc.free(namePtr);
       }
     },
   );
@@ -345,15 +324,13 @@ void main() {
   // T26: close() on one handle does not affect another live handle
   // -----------------------------------------------------------------------
   test('T26: close() on one handle does not affect another live handle', () {
-    final path = testIndexPath('t26_close_one_handle.index');
-    cleanTestIndex(path);
-
+    final name = testCollectionName('t26_close_one_handle');
     final errorCode = calloc<Int32>();
-    final pathPtr = path.toNativeUtf8();
+    final namePtr = name.toNativeUtf8();
 
     try {
-      final handleA = native.hnswOpen(
-        pathPtr,
+      final handleA = native.hnswCreate(
+        namePtr,
         4,
         1000,
         16,
@@ -361,13 +338,12 @@ void main() {
         64,
         0,
         1,
-        0,
         errorCode,
       );
       expect(errorCode.value, equals(0));
 
-      final handleB = native.hnswOpen(
-        pathPtr,
+      final handleB = native.hnswCreate(
+        namePtr,
         4,
         1000,
         16,
@@ -375,7 +351,6 @@ void main() {
         64,
         0,
         1,
-        0,
         errorCode,
       );
       expect(errorCode.value, equals(0));
@@ -396,8 +371,23 @@ void main() {
       expect(native.hnswRegistrySize(), equals(0));
     } finally {
       calloc.free(errorCode);
-      calloc.free(pathPtr);
-      cleanTestIndex(path);
+      calloc.free(namePtr);
     }
+  });
+
+  test('T31: concurrent first opens share one context', () async {
+    const isolateCount = 100;
+    final name = testCollectionName('t31_concurrent_first_open');
+
+    final results = await spawnWorkers(
+      collectionName: name,
+      count: isolateCount,
+      iterations: 0,
+      sleepMs: 0,
+      workerFn: createOnlyWorker,
+    );
+
+    expectWorkersSucceeded(results);
+    expect(results.map((result) => result.contextId).toSet(), hasLength(1));
   });
 }

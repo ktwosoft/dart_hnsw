@@ -8,13 +8,43 @@ import 'package:ffi/ffi.dart';
 
 typedef HnswHandle = ffi.Pointer<ffi.Void>;
 
-const _hnswAbiVersion = 1;
+const _hnswAbiVersion = 2;
 const _libraryPathEnvVar = 'DART_HNSW_LIBRARY_PATH';
 const _forceDynamicLibraryEnvVar = 'DART_HNSW_FORCE_DYNAMIC_LIBRARY';
 
-typedef _NativeHnswOpen =
+// ---------------------------------------------------------------------------
+// Native typedefs
+// ---------------------------------------------------------------------------
+
+typedef _NativeHnswCreate =
     HnswHandle Function(
       ffi.Pointer<Utf8>,
+      ffi.Int32,
+      ffi.Int32,
+      ffi.Int32,
+      ffi.Int32,
+      ffi.Int32,
+      ffi.Int32,
+      ffi.Int32,
+      ffi.Pointer<ffi.Int32>,
+    );
+typedef _DartHnswCreate =
+    HnswHandle Function(
+      ffi.Pointer<Utf8>,
+      int,
+      int,
+      int,
+      int,
+      int,
+      int,
+      int,
+      ffi.Pointer<ffi.Int32>,
+    );
+
+typedef _NativeHnswLoad =
+    HnswHandle Function(
+      ffi.Pointer<Utf8>,
+      ffi.Pointer<ffi.Uint8>,
       ffi.Int32,
       ffi.Int32,
       ffi.Int32,
@@ -25,9 +55,10 @@ typedef _NativeHnswOpen =
       ffi.Int32,
       ffi.Pointer<ffi.Int32>,
     );
-typedef _DartHnswOpen =
+typedef _DartHnswLoad =
     HnswHandle Function(
       ffi.Pointer<Utf8>,
+      ffi.Pointer<ffi.Uint8>,
       int,
       int,
       int,
@@ -108,15 +139,31 @@ typedef _DartHnswMaxElements = int Function(HnswHandle);
 typedef _NativeHnswGetEfSearch = ffi.Int32 Function(HnswHandle);
 typedef _DartHnswGetEfSearch = int Function(HnswHandle);
 
-typedef _NativeHnswCheckpoint = ffi.Int32 Function(HnswHandle);
-typedef _DartHnswCheckpoint = int Function(HnswHandle);
+typedef _NativeHnswCheckpoint =
+    ffi.Int32 Function(
+      HnswHandle,
+      ffi.Pointer<ffi.Uint8>,
+      ffi.Int32,
+      ffi.Pointer<ffi.Int32>,
+    );
+typedef _DartHnswCheckpoint =
+    int Function(
+      HnswHandle,
+      ffi.Pointer<ffi.Uint8>,
+      int,
+      ffi.Pointer<ffi.Int32>,
+    );
 
 typedef _NativeHnswAbiVersion = ffi.Int32 Function();
 typedef _DartHnswAbiVersion = int Function();
 
-@ffi.Native<_NativeHnswOpen>(symbol: 'hnsw_open')
-external HnswHandle nativeHnswOpen(
-  ffi.Pointer<Utf8> path,
+// ---------------------------------------------------------------------------
+// @ffi.Native external declarations (used by native-asset / static linking)
+// ---------------------------------------------------------------------------
+
+@ffi.Native<_NativeHnswCreate>(symbol: 'hnsw_create')
+external HnswHandle nativeHnswCreate(
+  ffi.Pointer<Utf8> collectionName,
   int dimensions,
   int maxElements,
   int m,
@@ -124,7 +171,21 @@ external HnswHandle nativeHnswOpen(
   int efSearch,
   int metric,
   int allowReplaceDeleted,
-  int reservedOpenFlags,
+  ffi.Pointer<ffi.Int32> errorCode,
+);
+
+@ffi.Native<_NativeHnswLoad>(symbol: 'hnsw_load')
+external HnswHandle nativeHnswLoad(
+  ffi.Pointer<Utf8> collectionName,
+  ffi.Pointer<ffi.Uint8> data,
+  int dataSize,
+  int dimensions,
+  int maxElements,
+  int m,
+  int efConstruction,
+  int efSearch,
+  int metric,
+  int allowReplaceDeleted,
   ffi.Pointer<ffi.Int32> errorCode,
 );
 
@@ -184,14 +245,24 @@ external int nativeHnswMaxElements(HnswHandle handle);
 external int nativeHnswGetEfSearch(HnswHandle handle);
 
 @ffi.Native<_NativeHnswCheckpoint>(symbol: 'hnsw_checkpoint')
-external int nativeHnswCheckpoint(HnswHandle handle);
+external int nativeHnswCheckpoint(
+  HnswHandle handle,
+  ffi.Pointer<ffi.Uint8> outBuffer,
+  int bufferSize,
+  ffi.Pointer<ffi.Int32> outWritten,
+);
 
 @ffi.Native<_NativeHnswAbiVersion>(symbol: 'hnsw_abi_version')
 external int nativeHnswAbiVersion();
 
+// ---------------------------------------------------------------------------
+// HnswNativeBindings — resolved function pointers
+// ---------------------------------------------------------------------------
+
 class HnswNativeBindings {
   final String backendDescription;
-  final _DartHnswOpen _hnswOpen;
+  final _DartHnswCreate _hnswCreate;
+  final _DartHnswLoad _hnswLoad;
   final _DartHnswClose _hnswClose;
   final _DartHnswContextId _hnswContextId;
   final _DartHnswRegistrySize _hnswRegistrySize;
@@ -223,7 +294,8 @@ class HnswNativeBindings {
 
   HnswNativeBindings._resolved(_ResolvedBindings resolved)
     : backendDescription = resolved.backendDescription,
-      _hnswOpen = resolved.hnswOpen,
+      _hnswCreate = resolved.hnswCreate,
+      _hnswLoad = resolved.hnswLoad,
       _hnswClose = resolved.hnswClose,
       _hnswContextId = resolved.hnswContextId,
       _hnswRegistrySize = resolved.hnswRegistrySize,
@@ -291,8 +363,10 @@ class HnswNativeBindings {
     }
   }
 
-  HnswHandle hnswOpen(
-    ffi.Pointer<Utf8> path,
+  // -- Bindings --
+
+  HnswHandle hnswCreate(
+    ffi.Pointer<Utf8> collectionName,
     int dimensions,
     int maxElements,
     int m,
@@ -300,10 +374,9 @@ class HnswNativeBindings {
     int efSearch,
     int metric,
     int allowReplaceDeleted,
-    int reservedOpenFlags,
     ffi.Pointer<ffi.Int32> errorCode,
-  ) => _hnswOpen(
-    path,
+  ) => _hnswCreate(
+    collectionName,
     dimensions,
     maxElements,
     m,
@@ -311,7 +384,32 @@ class HnswNativeBindings {
     efSearch,
     metric,
     allowReplaceDeleted,
-    reservedOpenFlags,
+    errorCode,
+  );
+
+  HnswHandle hnswLoad(
+    ffi.Pointer<Utf8> collectionName,
+    ffi.Pointer<ffi.Uint8> data,
+    int dataSize,
+    int dimensions,
+    int maxElements,
+    int m,
+    int efConstruction,
+    int efSearch,
+    int metric,
+    int allowReplaceDeleted,
+    ffi.Pointer<ffi.Int32> errorCode,
+  ) => _hnswLoad(
+    collectionName,
+    data,
+    dataSize,
+    dimensions,
+    maxElements,
+    m,
+    efConstruction,
+    efSearch,
+    metric,
+    allowReplaceDeleted,
     errorCode,
   );
 
@@ -360,12 +458,22 @@ class HnswNativeBindings {
 
   int hnswGetEfSearch(HnswHandle handle) => _hnswGetEfSearch(handle);
 
-  int hnswCheckpoint(HnswHandle handle) => _hnswCheckpoint(handle);
+  int hnswCheckpoint(
+    HnswHandle handle,
+    ffi.Pointer<ffi.Uint8> outBuffer,
+    int bufferSize,
+    ffi.Pointer<ffi.Int32> outWritten,
+  ) => _hnswCheckpoint(handle, outBuffer, bufferSize, outWritten);
 }
+
+// ---------------------------------------------------------------------------
+// _ResolvedBindings — resolves to native-asset or dynamic-library
+// ---------------------------------------------------------------------------
 
 class _ResolvedBindings {
   final String backendDescription;
-  final _DartHnswOpen hnswOpen;
+  final _DartHnswCreate hnswCreate;
+  final _DartHnswLoad hnswLoad;
   final _DartHnswClose hnswClose;
   final _DartHnswContextId hnswContextId;
   final _DartHnswRegistrySize hnswRegistrySize;
@@ -383,7 +491,8 @@ class _ResolvedBindings {
 
   _ResolvedBindings({
     required this.backendDescription,
-    required this.hnswOpen,
+    required this.hnswCreate,
+    required this.hnswLoad,
     required this.hnswClose,
     required this.hnswContextId,
     required this.hnswRegistrySize,
@@ -421,7 +530,8 @@ class _ResolvedBindings {
       }
       return _ResolvedBindings(
         backendDescription: 'native-asset',
-        hnswOpen: nativeHnswOpen,
+        hnswCreate: nativeHnswCreate,
+        hnswLoad: nativeHnswLoad,
         hnswClose: nativeHnswClose,
         hnswContextId: nativeHnswContextId,
         hnswRegistrySize: nativeHnswRegistrySize,
@@ -474,8 +584,11 @@ class _ResolvedBindings {
 
     return _ResolvedBindings(
       backendDescription: 'dynamic-library:${file.absolute.path}',
-      hnswOpen: library.lookupFunction<_NativeHnswOpen, _DartHnswOpen>(
-        'hnsw_open',
+      hnswCreate: library.lookupFunction<_NativeHnswCreate, _DartHnswCreate>(
+        'hnsw_create',
+      ),
+      hnswLoad: library.lookupFunction<_NativeHnswLoad, _DartHnswLoad>(
+        'hnsw_load',
       ),
       hnswClose: library.lookupFunction<_NativeHnswClose, _DartHnswClose>(
         'hnsw_close',

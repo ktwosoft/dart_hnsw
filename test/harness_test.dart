@@ -7,7 +7,7 @@ import 'package:dart_hnsw/src/native_bindings.dart';
 import '_fixtures.dart';
 
 // ---------------------------------------------------------------------------
-// Legacy harness regression tests — adapted to use HnswNativeBindings
+// Legacy harness regression tests — adapted to in-memory API
 // ---------------------------------------------------------------------------
 
 void main() {
@@ -21,16 +21,71 @@ void main() {
     expectCleanRegistry(native);
   });
 
-  test('same path returns distinct handles to the same shared context', () {
-    final path = testIndexPath('harness_same_path.index');
-    cleanTestIndex(path);
+  test(
+    'same collection name returns distinct handles to the same shared context',
+    () {
+      final name = testCollectionName('harness_same_collection');
+      final errorCode = calloc<Int32>();
+      final namePtr = name.toNativeUtf8();
 
+      try {
+        final handle1 = native.hnswCreate(
+          namePtr,
+          4,
+          100,
+          16,
+          200,
+          64,
+          0,
+          1,
+          errorCode,
+        );
+        expect(errorCode.value, equals(0));
+        expect(isNullPointer(handle1), isFalse);
+
+        final handle2 = native.hnswCreate(
+          namePtr,
+          4,
+          100,
+          16,
+          200,
+          64,
+          0,
+          1,
+          errorCode,
+        );
+        expect(errorCode.value, equals(0));
+        expect(isNullPointer(handle2), isFalse);
+
+        expect(handle2.address, isNot(equals(handle1.address)));
+        expect(
+          native.hnswContextId(handle2),
+          equals(native.hnswContextId(handle1)),
+        );
+        expect(native.hnswRegistrySize(), equals(1));
+
+        expect(native.hnswClose(handle1), equals(0));
+        expect(native.hnswRegistrySize(), equals(1));
+
+        expect(native.hnswClose(handle2), equals(0));
+        expect(native.hnswRegistrySize(), equals(0));
+      } finally {
+        calloc.free(errorCode);
+        calloc.free(namePtr);
+      }
+    },
+  );
+
+  test('different collection names create different shared contexts', () {
+    final nameA = testCollectionName('harness_different_a');
+    final nameB = testCollectionName('harness_different_b');
     final errorCode = calloc<Int32>();
-    final pathPtr = path.toNativeUtf8();
+    final namePtrA = nameA.toNativeUtf8();
+    final namePtrB = nameB.toNativeUtf8();
 
     try {
-      final handle1 = native.hnswOpen(
-        pathPtr,
+      final handleA = native.hnswCreate(
+        namePtrA,
         4,
         100,
         16,
@@ -38,74 +93,13 @@ void main() {
         64,
         0,
         1,
-        0,
-        errorCode,
-      );
-      expect(errorCode.value, equals(0));
-      expect(isNullPointer(handle1), isFalse);
-
-      final handle2 = native.hnswOpen(
-        pathPtr,
-        4,
-        100,
-        16,
-        200,
-        64,
-        0,
-        1,
-        0,
-        errorCode,
-      );
-      expect(errorCode.value, equals(0));
-      expect(isNullPointer(handle2), isFalse);
-
-      expect(handle2.address, isNot(equals(handle1.address)));
-      expect(
-        native.hnswContextId(handle2),
-        equals(native.hnswContextId(handle1)),
-      );
-      expect(native.hnswRegistrySize(), equals(1));
-
-      expect(native.hnswClose(handle1), equals(0));
-      expect(native.hnswRegistrySize(), equals(1));
-
-      expect(native.hnswClose(handle2), equals(0));
-      expect(native.hnswRegistrySize(), equals(0));
-    } finally {
-      calloc.free(errorCode);
-      calloc.free(pathPtr);
-      cleanTestIndex(path);
-    }
-  });
-
-  test('different paths create different shared contexts', () {
-    final pathA = testIndexPath('harness_different_a.index');
-    final pathB = testIndexPath('harness_different_b.index');
-    cleanTestIndex(pathA);
-    cleanTestIndex(pathB);
-
-    final errorCode = calloc<Int32>();
-    final pathPtrA = pathA.toNativeUtf8();
-    final pathPtrB = pathB.toNativeUtf8();
-
-    try {
-      final handleA = native.hnswOpen(
-        pathPtrA,
-        4,
-        100,
-        16,
-        200,
-        64,
-        0,
-        1,
-        0,
         errorCode,
       );
       expect(errorCode.value, equals(0));
       expect(isNullPointer(handleA), isFalse);
 
-      final handleB = native.hnswOpen(
-        pathPtrB,
+      final handleB = native.hnswCreate(
+        namePtrB,
         4,
         100,
         16,
@@ -113,7 +107,6 @@ void main() {
         64,
         0,
         1,
-        0,
         errorCode,
       );
       expect(errorCode.value, equals(0));
@@ -131,23 +124,19 @@ void main() {
       expect(native.hnswRegistrySize(), equals(0));
     } finally {
       calloc.free(errorCode);
-      calloc.free(pathPtrA);
-      calloc.free(pathPtrB);
-      cleanTestIndex(pathA);
-      cleanTestIndex(pathB);
+      calloc.free(namePtrA);
+      calloc.free(namePtrB);
     }
   });
 
   test('upserts through one handle are visible through another handle', () {
-    final path = testIndexPath('harness_cross_handle_visibility.index');
-    cleanTestIndex(path);
-
+    final name = testCollectionName('harness_cross_handle_visibility');
     final errorCode = calloc<Int32>();
-    final pathPtr = path.toNativeUtf8();
+    final namePtr = name.toNativeUtf8();
 
     try {
-      final writerHandle = native.hnswOpen(
-        pathPtr,
+      final writerHandle = native.hnswCreate(
+        namePtr,
         4,
         100,
         16,
@@ -155,13 +144,12 @@ void main() {
         64,
         0,
         1,
-        0,
         errorCode,
       );
       expect(errorCode.value, equals(0));
 
-      final readerHandle = native.hnswOpen(
-        pathPtr,
+      final readerHandle = native.hnswCreate(
+        namePtr,
         4,
         100,
         16,
@@ -169,7 +157,6 @@ void main() {
         64,
         0,
         1,
-        0,
         errorCode,
       );
       expect(errorCode.value, equals(0));
@@ -211,22 +198,19 @@ void main() {
       expect(native.hnswRegistrySize(), equals(0));
     } finally {
       calloc.free(errorCode);
-      calloc.free(pathPtr);
-      cleanTestIndex(path);
+      calloc.free(namePtr);
     }
   });
 
-  test('many isolates opening the same path share one context', () async {
+  test('many isolates opening the same collection share one context', () async {
     const isolateCount = 20;
-    final path = testIndexPath('harness_many_isolates_same_context.index');
-    cleanTestIndex(path);
-
+    final name = testCollectionName('harness_many_isolates_same_context');
     final errorCode = calloc<Int32>();
-    final pathPtr = path.toNativeUtf8();
+    final namePtr = name.toNativeUtf8();
 
     try {
-      final mainHandle = native.hnswOpen(
-        pathPtr,
+      final mainHandle = native.hnswCreate(
+        namePtr,
         4,
         10000,
         16,
@@ -234,14 +218,13 @@ void main() {
         64,
         0,
         1,
-        0,
         errorCode,
       );
       expect(errorCode.value, equals(0));
       final mainId = native.hnswContextId(mainHandle);
 
       final results = await spawnWorkers(
-        path: path,
+        collectionName: name,
         count: isolateCount,
         iterations: 0,
         sleepMs: 0,
@@ -258,21 +241,18 @@ void main() {
       expect(native.hnswRegistrySize(), equals(0));
     } finally {
       calloc.free(errorCode);
-      calloc.free(pathPtr);
-      cleanTestIndex(path);
+      calloc.free(namePtr);
     }
   });
 
   test('reopen after full close creates a new context id', () {
-    final path = testIndexPath('harness_reopen_after_close.index');
-    cleanTestIndex(path);
-
+    final name = testCollectionName('harness_reopen_after_close');
     final errorCode = calloc<Int32>();
-    final pathPtr = path.toNativeUtf8();
+    final namePtr = name.toNativeUtf8();
 
     try {
-      final handle1 = native.hnswOpen(
-        pathPtr,
+      final handle1 = native.hnswCreate(
+        namePtr,
         4,
         100,
         16,
@@ -280,7 +260,6 @@ void main() {
         64,
         0,
         1,
-        0,
         errorCode,
       );
       expect(errorCode.value, equals(0));
@@ -289,8 +268,8 @@ void main() {
       expect(native.hnswClose(handle1), equals(0));
       expect(native.hnswRegistrySize(), equals(0));
 
-      final handle2 = native.hnswOpen(
-        pathPtr,
+      final handle2 = native.hnswCreate(
+        namePtr,
         4,
         100,
         16,
@@ -298,7 +277,6 @@ void main() {
         64,
         0,
         1,
-        0,
         errorCode,
       );
       expect(errorCode.value, equals(0));
@@ -310,8 +288,7 @@ void main() {
       expect(native.hnswRegistrySize(), equals(0));
     } finally {
       calloc.free(errorCode);
-      calloc.free(pathPtr);
-      cleanTestIndex(path);
+      calloc.free(namePtr);
     }
   });
 }

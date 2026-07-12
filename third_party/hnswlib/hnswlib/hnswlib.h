@@ -119,6 +119,9 @@ static bool AVX512Capable() {
 #include <queue>
 #include <vector>
 #include <iostream>
+#include <ostream>
+#include <istream>
+#include <stdexcept>
 #include <string.h>
 
 namespace hnswlib {
@@ -164,7 +167,9 @@ static void writeBinaryPOD(std::ostream &out, const T &podRef) {
 
 template<typename T>
 static void readBinaryPOD(std::istream &in, T &podRef) {
-    in.read((char *) &podRef, sizeof(T));
+    if (!in.read((char *) &podRef, sizeof(T))) {
+        throw std::runtime_error("Unexpected end of index data");
+    }
 }
 
 template<typename MTYPE>
@@ -195,7 +200,7 @@ class AlgorithmInterface {
     virtual std::vector<std::pair<dist_t, labeltype>>
         searchKnnCloserFirst(const void* query_data, size_t k, BaseFilterFunctor* isIdAllowed = nullptr) const;
 
-    virtual void saveIndex(const std::string &location) = 0;
+    virtual void saveIndex(std::ostream &output) = 0;
     virtual ~AlgorithmInterface(){
     }
 };

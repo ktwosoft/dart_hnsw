@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0
+
+- Bumped ABI version to 2. - Breaking Change
+- Removed all filesystem dependencies. The index now lives entirely in native memory.
+- `checkpoint()` now returns `Uint8List` instead of writing to disk. The caller is responsible for storing the bytes.
+- `HnswIndex.open(path: ...)` replaced by `HnswIndex.create(collectionName: ...)` and `HnswIndex.load(collectionName: ..., bytes: ...)`.
+- The binary format is unchanged — compatible with hnswlib's native `saveIndex`/`loadIndex` format.
+- Removed `path` parameter from all APIs. Collection names replace file paths for shared context identification.
+- Removed process safety test and `_process_child.dart` — no longer applicable without file locking.
+- Removed `HnswConcurrentProcessException` — no more cross-process file locking.
+- Updated all tests to use the new in-memory API.
+- Updated README and example to demonstrate the new checkpoint/load workflow.
+
 ## 0.1.2
 
 - Fix README & CHANGELOG version reference to point to latest.

@@ -1,5 +1,5 @@
 import 'dart:ffi';
-import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 import 'package:test/test.dart';
@@ -23,20 +23,18 @@ void main() {
   });
 
   // -----------------------------------------------------------------------
-  // T17: same path opened with wrong dimensions while shared context exists → error (-3)
+  // T17: same collection opened with wrong dimensions while shared context exists → error (-3)
   // -----------------------------------------------------------------------
   test(
-    'T17: same path opened with wrong dimensions while shared context exists → error (-3)',
+    'T17: same collection opened with wrong dimensions while shared context exists → error (-3)',
     () {
-      final path = testIndexPath('t17_config_mismatch.index');
-      cleanTestIndex(path);
-
+      final name = testCollectionName('t17_config_mismatch');
       final errorCode = calloc<Int32>();
-      final pathPtr = path.toNativeUtf8();
+      final namePtr = name.toNativeUtf8();
 
       try {
-        final handle1 = native.hnswOpen(
-          pathPtr,
+        final handle1 = native.hnswCreate(
+          namePtr,
           4,
           100,
           16,
@@ -44,13 +42,12 @@ void main() {
           64,
           0,
           1,
-          0,
           errorCode,
         );
         expect(errorCode.value, equals(0));
 
-        final handle2 = native.hnswOpen(
-          pathPtr,
+        final handle2 = native.hnswCreate(
+          namePtr,
           8,
           100,
           16,
@@ -58,7 +55,6 @@ void main() {
           64,
           0,
           1,
-          0,
           errorCode,
         );
         expect(errorCode.value, equals(-3));
@@ -67,28 +63,22 @@ void main() {
         expect(native.hnswRegistrySize(), equals(0));
       } finally {
         calloc.free(errorCode);
-        calloc.free(pathPtr);
-        cleanTestIndex(path);
+        calloc.free(namePtr);
       }
     },
   );
 
   // -----------------------------------------------------------------------
-  // T20: missing file → open creates a new empty index (elementCount == 0)
+  // T20: create new index → elementCount == 0
   // -----------------------------------------------------------------------
-  test('T20: missing file → open creates a new empty index', () {
-    final path = testIndexPath('t20_missing_file.index');
-    cleanTestIndex(path);
-
-    // Ensure file does not exist
-    expect(File(path).existsSync(), isFalse);
-
+  test('T20: create new index → elementCount == 0', () {
+    final name = testCollectionName('t20_new_index');
     final errorCode = calloc<Int32>();
-    final pathPtr = path.toNativeUtf8();
+    final namePtr = name.toNativeUtf8();
 
     try {
-      final handle = native.hnswOpen(
-        pathPtr,
+      final handle = native.hnswCreate(
+        namePtr,
         4,
         100,
         16,
@@ -96,7 +86,6 @@ void main() {
         64,
         0,
         1,
-        0,
         errorCode,
       );
       expect(errorCode.value, equals(0));
@@ -108,27 +97,30 @@ void main() {
       expect(native.hnswRegistrySize(), equals(0));
     } finally {
       calloc.free(errorCode);
-      calloc.free(pathPtr);
-      cleanTestIndex(path);
+      calloc.free(namePtr);
     }
   });
 
   // -----------------------------------------------------------------------
-  // T21: corrupt file → open → HnswLoadException (-5)
+  // T21: load corrupt bytes → error -5
   // -----------------------------------------------------------------------
-  test('T21: corrupt file → open → error -5', () {
-    final path = testIndexPath('t21_corrupt_file.index');
-    cleanTestIndex(path);
-
-    // Write garbage
-    File(path).writeAsBytesSync([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-
+  test('T21: load corrupt bytes → error -5', () {
+    final name = testCollectionName('t21_corrupt_bytes');
     final errorCode = calloc<Int32>();
-    final pathPtr = path.toNativeUtf8();
+    final namePtr = name.toNativeUtf8();
+
+    // Garbage bytes
+    final garbage = Uint8List.fromList([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    final dataPtr = calloc<Uint8>(garbage.length);
+    for (var i = 0; i < garbage.length; i++) {
+      dataPtr[i] = garbage[i];
+    }
 
     try {
-      final handle = native.hnswOpen(
-        pathPtr,
+      final handle = native.hnswLoad(
+        namePtr,
+        dataPtr,
+        garbage.length,
         4,
         100,
         16,
@@ -136,15 +128,14 @@ void main() {
         64,
         0,
         1,
-        0,
         errorCode,
       );
       expect(errorCode.value, equals(-5));
       expect(isNullPointer(handle), isTrue);
     } finally {
       calloc.free(errorCode);
-      calloc.free(pathPtr);
-      cleanTestIndex(path);
+      calloc.free(namePtr);
+      calloc.free(dataPtr);
     }
   });
 
@@ -152,16 +143,14 @@ void main() {
   // T22: cosine metric: upsert zero vector → -8
   // -----------------------------------------------------------------------
   test('T22: cosine metric: upsert zero vector → -8', () {
-    final path = testIndexPath('t22_zero_vector.index');
-    cleanTestIndex(path);
-
+    final name = testCollectionName('t22_zero_vector');
     final errorCode = calloc<Int32>();
-    final pathPtr = path.toNativeUtf8();
+    final namePtr = name.toNativeUtf8();
 
     try {
       // metric=2 for cosine
-      final handle = native.hnswOpen(
-        pathPtr,
+      final handle = native.hnswCreate(
+        namePtr,
         4,
         100,
         16,
@@ -169,7 +158,6 @@ void main() {
         64,
         2,
         1,
-        0,
         errorCode,
       );
       expect(errorCode.value, equals(0));
@@ -189,8 +177,7 @@ void main() {
       expect(native.hnswRegistrySize(), equals(0));
     } finally {
       calloc.free(errorCode);
-      calloc.free(pathPtr);
-      cleanTestIndex(path);
+      calloc.free(namePtr);
     }
   });
 
@@ -198,15 +185,13 @@ void main() {
   // T24: markDeleted(id) → elementCount unchanged
   // -----------------------------------------------------------------------
   test('T24: markDeleted(id) → elementCount unchanged', () {
-    final path = testIndexPath('t24_deleted_count.index');
-    cleanTestIndex(path);
-
+    final name = testCollectionName('t24_deleted_count');
     final errorCode = calloc<Int32>();
-    final pathPtr = path.toNativeUtf8();
+    final namePtr = name.toNativeUtf8();
 
     try {
-      final handle = native.hnswOpen(
-        pathPtr,
+      final handle = native.hnswCreate(
+        namePtr,
         4,
         100,
         16,
@@ -214,7 +199,6 @@ void main() {
         64,
         0,
         1,
-        0,
         errorCode,
       );
       expect(errorCode.value, equals(0));
@@ -244,26 +228,23 @@ void main() {
       expect(native.hnswRegistrySize(), equals(0));
     } finally {
       calloc.free(errorCode);
-      calloc.free(pathPtr);
-      cleanTestIndex(path);
+      calloc.free(namePtr);
     }
   });
 
   // -----------------------------------------------------------------------
-  // T25: same path opened with different metric while shared context exists fails (-3)
+  // T25: same collection opened with different metric while shared context exists fails (-3)
   // -----------------------------------------------------------------------
   test(
-    'T25: same path opened with different metric while shared context exists fails (-3)',
+    'T25: same collection opened with different metric while shared context exists fails (-3)',
     () {
-      final path = testIndexPath('t25_metric_mismatch.index');
-      cleanTestIndex(path);
-
+      final name = testCollectionName('t25_metric_mismatch');
       final errorCode = calloc<Int32>();
-      final pathPtr = path.toNativeUtf8();
+      final namePtr = name.toNativeUtf8();
 
       try {
-        final handle1 = native.hnswOpen(
-          pathPtr,
+        final handle1 = native.hnswCreate(
+          namePtr,
           4,
           100,
           16,
@@ -271,13 +252,12 @@ void main() {
           64,
           0,
           1,
-          0,
           errorCode,
         );
         expect(errorCode.value, equals(0));
 
-        final handle2 = native.hnswOpen(
-          pathPtr,
+        final handle2 = native.hnswCreate(
+          namePtr,
           4,
           100,
           16,
@@ -285,7 +265,6 @@ void main() {
           64,
           1,
           1,
-          0,
           errorCode,
         );
         expect(errorCode.value, equals(-3));
@@ -294,24 +273,21 @@ void main() {
         expect(native.hnswRegistrySize(), equals(0));
       } finally {
         calloc.free(errorCode);
-        calloc.free(pathPtr);
-        cleanTestIndex(path);
+        calloc.free(namePtr);
       }
     },
   );
 
   test(
-    'T27: same path opened with different allowReplaceDeleted while shared context exists fails (-3)',
+    'T27: same collection opened with different allowReplaceDeleted while shared context exists fails (-3)',
     () {
-      final path = testIndexPath('t27_allow_replace_deleted_mismatch.index');
-      cleanTestIndex(path);
-
+      final name = testCollectionName('t27_allow_replace_deleted_mismatch');
       final errorCode = calloc<Int32>();
-      final pathPtr = path.toNativeUtf8();
+      final namePtr = name.toNativeUtf8();
 
       try {
-        final handle1 = native.hnswOpen(
-          pathPtr,
+        final handle1 = native.hnswCreate(
+          namePtr,
           4,
           100,
           16,
@@ -319,19 +295,17 @@ void main() {
           64,
           0,
           1,
-          0,
           errorCode,
         );
         expect(errorCode.value, equals(0));
 
-        final handle2 = native.hnswOpen(
-          pathPtr,
+        final handle2 = native.hnswCreate(
+          namePtr,
           4,
           100,
           16,
           200,
           64,
-          0,
           0,
           0,
           errorCode,
@@ -343,8 +317,7 @@ void main() {
         expect(native.hnswRegistrySize(), equals(0));
       } finally {
         calloc.free(errorCode);
-        calloc.free(pathPtr);
-        cleanTestIndex(path);
+        calloc.free(namePtr);
       }
     },
   );

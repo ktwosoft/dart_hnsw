@@ -1,4 +1,5 @@
 import 'dart:ffi' as ffi;
+import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 
@@ -22,17 +23,11 @@ enum HnswErrorCode {
   /// Configuration mismatch when attaching to an existing shared context.
   configMismatch(-3),
 
-  /// The index is locked by another process.
-  lockedProcess(-4),
-
-  /// Failed to load the index from disk.
+  /// Failed to load the index from a byte buffer.
   loadFailed(-5),
 
-  /// Failed to save the index to disk.
+  /// Failed to save (checkpoint) the index to a byte buffer.
   saveFailed(-6),
-
-  /// Failed to rename checkpoint files atomically.
-  renameFailed(-7),
 
   /// Zero vector provided where not allowed (e.g. cosine metric).
   zeroVector(-8),
@@ -64,7 +59,7 @@ class HnswException implements Exception {
   String toString() => 'HnswException: $message';
 }
 
-/// Thrown when opening or creating an index fails.
+/// Thrown when creating or loading an index fails.
 class HnswOpenException extends HnswException {
   const HnswOpenException(super.message);
 }
@@ -80,17 +75,12 @@ class HnswCapacityExceededException extends HnswException {
   const HnswCapacityExceededException(super.message);
 }
 
-/// Thrown when another process holds the exclusive file lock.
-class HnswConcurrentProcessException extends HnswException {
-  const HnswConcurrentProcessException(super.message);
-}
-
-/// Thrown when loading a persisted index from disk fails.
+/// Thrown when loading a persisted index from bytes fails.
 class HnswLoadException extends HnswException {
   const HnswLoadException(super.message);
 }
 
-/// Thrown when saving (checkpointing) the index to disk fails.
+/// Thrown when saving (checkpointing) the index to bytes fails.
 class HnswCheckpointException extends HnswException {
   const HnswCheckpointException(super.message);
 }
@@ -166,18 +156,10 @@ HnswException _errorForCode(int code, String context) {
       return HnswDimensionMismatchException(
         '$context: dimensions, metric, or delete-reuse setting mismatch with the active shared index context',
       );
-    case -4:
-      return HnswConcurrentProcessException(
-        '$context: index is locked by another process',
-      );
     case -5:
       return HnswLoadException('$context: failed to load index');
     case -6:
       return HnswCheckpointException('$context: failed to save index');
-    case -7:
-      return HnswCheckpointException(
-        '$context: failed to replace checkpoint files',
-      );
     case -8:
       return HnswZeroVectorException(
         '$context: zero vector not allowed for cosine metric',
@@ -200,9 +182,13 @@ int _metricCode(HnswMetric metric) {
 
 /// A shared native HNSW index backed by hnswlib.
 ///
-/// Opening the same canonical [path] from multiple isolates or locations
-/// within the same process attaches them to one shared native context.
-/// Searches use a shared reader lock; mutations use an exclusive writer lock.
+/// Opening the same [collectionName] from multiple isolates within the same
+/// process attaches them to one shared native context. Searches use a shared
+/// reader lock; mutations use an exclusive writer lock.
+///
+/// The index lives entirely in native memory. Use [checkpoint] to serialize
+/// the index to a [Uint8List] that you can store anywhere (filesystem,
+/// database, blob storage, etc.). Use [HnswIndex.load] to restore from bytes.
 ///
 /// {@category Index}
 class HnswIndex {
@@ -211,16 +197,17 @@ class HnswIndex {
 
   HnswIndex._(this._handle, this._dimensions);
 
-  /// Opens or creates an HNSW index at [path].
+  /// Creates a new in-memory HNSW index.
   ///
-  /// If the same [path] is already open in this process, the existing shared
-  /// native context is reused. The [dimensions], [metric], and
-  /// [allowReplaceDeleted] values must match the existing context.
+  /// If an index with the same [collectionName] is already open in this
+  /// process, the existing shared native context is reused. The [dimensions],
+  /// [metric], and [allowReplaceDeleted] values must match the existing
+  /// context.
   ///
   /// [maxElements] sets the initial capacity. [m] and [efConstruction] control
   /// graph build quality. [efSearch] controls the default search breadth.
-  static HnswIndex open({
-    required String path,
+  static HnswIndex create({
+    required String collectionName,
     required int dimensions,
     HnswMetric metric = HnswMetric.cosine,
     int maxElements = 100000,
@@ -230,11 +217,11 @@ class HnswIndex {
     bool allowReplaceDeleted = true,
   }) {
     final errorCode = calloc<ffi.Int32>();
-    final pathPtr = path.toNativeUtf8();
+    final namePtr = collectionName.toNativeUtf8();
 
     try {
-      final handle = _nativeBindings.hnswOpen(
-        pathPtr,
+      final handle = _nativeBindings.hnswCreate(
+        namePtr,
         dimensions,
         maxElements,
         m,
@@ -242,18 +229,80 @@ class HnswIndex {
         efSearch,
         _metricCode(metric),
         allowReplaceDeleted ? 1 : 0,
-        0,
         errorCode,
       );
 
       if (errorCode.value != 0) {
-        throw _errorForCode(errorCode.value, 'HnswIndex.open(\'$path\')');
+        throw _errorForCode(
+          errorCode.value,
+          'HnswIndex.create(\'$collectionName\')',
+        );
       }
 
       return HnswIndex._(handle, dimensions);
     } finally {
       calloc.free(errorCode);
-      calloc.free(pathPtr);
+      calloc.free(namePtr);
+    }
+  }
+
+  /// Loads an HNSW index from a byte buffer previously produced by
+  /// [checkpoint].
+  ///
+  /// The [dimensions], [metric], and [allowReplaceDeleted] must match the
+  /// values used when the index was originally created. The binary payload
+  /// does not store all wrapper configuration, so the caller is responsible
+  /// for preserving and supplying the original settings. [maxElements] can
+  /// be set larger than the original capacity to allow future growth.
+  ///
+  /// If an index with the same [collectionName] is already open in this
+  /// process, the existing shared native context is reused (the byte buffer
+  /// is ignored).
+  static HnswIndex load({
+    required String collectionName,
+    required Uint8List bytes,
+    required int dimensions,
+    HnswMetric metric = HnswMetric.cosine,
+    int maxElements = 100000,
+    int m = 16,
+    int efConstruction = 200,
+    int efSearch = 64,
+    bool allowReplaceDeleted = true,
+  }) {
+    final errorCode = calloc<ffi.Int32>();
+    final namePtr = collectionName.toNativeUtf8();
+    final dataPtr = calloc<ffi.Uint8>(bytes.length);
+    for (var i = 0; i < bytes.length; i++) {
+      dataPtr[i] = bytes[i];
+    }
+
+    try {
+      final handle = _nativeBindings.hnswLoad(
+        namePtr,
+        dataPtr,
+        bytes.length,
+        dimensions,
+        maxElements,
+        m,
+        efConstruction,
+        efSearch,
+        _metricCode(metric),
+        allowReplaceDeleted ? 1 : 0,
+        errorCode,
+      );
+
+      if (errorCode.value != 0) {
+        throw _errorForCode(
+          errorCode.value,
+          'HnswIndex.load(\'$collectionName\')',
+        );
+      }
+
+      return HnswIndex._(handle, dimensions);
+    } finally {
+      calloc.free(errorCode);
+      calloc.free(namePtr);
+      calloc.free(dataPtr);
     }
   }
 
@@ -270,9 +319,10 @@ class HnswIndex {
 
   /// Inserts or replaces the vector for the given label [id].
   ///
-  /// The [vector] length must match the index [dimensions] specified at open.
-  /// If a vector with the same [id] already exists it is replaced.
+  /// The [vector] length must match the index [dimensions] specified at
+  /// creation. If a vector with the same [id] already exists it is replaced.
   void upsert(int id, List<double> vector) {
+    final handle = _requireOpenHandle();
     if (vector.length != _dimensions) {
       throw ArgumentError(
         'Expected $_dimensions dimensions, got ${vector.length}',
@@ -282,7 +332,7 @@ class HnswIndex {
     final vecPtr = _listToFloatPtr(vector);
     try {
       final result = _nativeBindings.hnswUpsertVector(
-        _requireOpenHandle(),
+        handle,
         id,
         vecPtr,
       );
@@ -299,6 +349,7 @@ class HnswIndex {
   /// More efficient than repeated [upsert] calls when adding many vectors.
   /// All entries must match the index [dimensions].
   void upsertBatch(List<HnswVectorEntry> entries) {
+    final handle = _requireOpenHandle();
     if (entries.isEmpty) return;
 
     final labels = calloc<ffi.Uint64>(entries.length);
@@ -320,7 +371,7 @@ class HnswIndex {
       }
 
       final result = _nativeBindings.hnswUpsertBatch(
-        _requireOpenHandle(),
+        handle,
         labels,
         vectors,
         entries.length,
@@ -339,6 +390,7 @@ class HnswIndex {
   /// Returns up to [k] results sorted by distance (ascending). The distance
   /// interpretation depends on the index [metric].
   List<HnswResult> search(List<double> query, {int k = 10}) {
+    final handle = _requireOpenHandle();
     if (query.length != _dimensions) {
       throw ArgumentError(
         'Expected $_dimensions dimensions, got ${query.length}',
@@ -352,7 +404,7 @@ class HnswIndex {
 
     try {
       final result = _nativeBindings.hnswSearchKnn(
-        _requireOpenHandle(),
+        handle,
         queryPtr,
         k,
         outLabels,
@@ -378,7 +430,7 @@ class HnswIndex {
   /// Marks the vector with label [id] as deleted.
   ///
   /// Deleted entries are excluded from search results. Their storage is
-  /// reused when [allowReplaceDeleted] was enabled at open.
+  /// reused when [allowReplaceDeleted] was enabled at creation.
   void markDeleted(int id) {
     final result = _nativeBindings.hnswMarkDeleted(_requireOpenHandle(), id);
     if (result != 0) {
@@ -428,17 +480,76 @@ class HnswIndex {
 
   /// Opaque identifier for the shared native context.
   ///
-  /// Handles attached to the same canonical path share the same context id.
+  /// Handles attached to the same collection name share the same context id.
   int get contextId => _nativeBindings.hnswContextId(_requireOpenHandle());
 
-  /// Persists the current index state to disk.
+  /// Serializes the current index state to a [Uint8List].
   ///
-  /// Writes the raw hnswlib index file. [close] does **not** save —
-  /// call [checkpoint] explicitly before closing to persist changes.
-  void checkpoint() {
-    final result = _nativeBindings.hnswCheckpoint(_requireOpenHandle());
-    if (result != 0) {
-      throw _errorForCode(result, 'checkpoint');
+  /// The returned bytes use the same binary format as hnswlib's native
+  /// `saveIndex`. The caller is responsible for storing them (filesystem,
+  /// database, blob storage, etc.). [close] does **not** save — call
+  /// [checkpoint] explicitly before closing to persist changes.
+  ///
+  /// To restore, pass the bytes to [HnswIndex.load].
+  Uint8List checkpoint() {
+    final handle = _requireOpenHandle();
+    final sizeOut = calloc<ffi.Int32>();
+
+    try {
+      // Phase 1: get the size.
+      final phase1 = _nativeBindings.hnswCheckpoint(
+        handle,
+        ffi.Pointer<ffi.Uint8>.fromAddress(0),
+        0,
+        sizeOut,
+      );
+      if (phase1 != 0) {
+        throw _errorForCode(phase1, 'checkpoint (size query)');
+      }
+
+      var size = sizeOut.value;
+      if (size <= 0) {
+        throw HnswCheckpointException('checkpoint: invalid size $size');
+      }
+
+      // The index may grow after the size query because another isolate can
+      // mutate the shared context. Retry with the required size reported by
+      // the fill call until a complete snapshot fits.
+      for (var attempt = 0; attempt < 16; attempt++) {
+        final buffer = calloc<ffi.Uint8>(size);
+        try {
+          sizeOut.value = 0;
+          final phase2 = _nativeBindings.hnswCheckpoint(
+            handle,
+            buffer,
+            size,
+            sizeOut,
+          );
+          final written = sizeOut.value;
+          if (phase2 == 0) {
+            if (written <= 0 || written > size) {
+              throw HnswCheckpointException(
+                'checkpoint: native returned invalid size $written',
+              );
+            }
+            return Uint8List.fromList(buffer.asTypedList(written));
+          }
+
+          if (phase2 == HnswErrorCode.invalidArg.code && written > size) {
+            size = written;
+            continue;
+          }
+          throw _errorForCode(phase2, 'checkpoint');
+        } finally {
+          calloc.free(buffer);
+        }
+      }
+
+      throw HnswCheckpointException(
+        'checkpoint: index changed continuously while serializing',
+      );
+    } finally {
+      calloc.free(sizeOut);
     }
   }
 
