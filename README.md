@@ -46,7 +46,7 @@ This lets you build isolate-heavy CLI or server workloads without copying one la
 
 ```yaml
 dependencies:
-  dart_hnsw: ^0.1.0
+  dart_hnsw: ^0.1.2
 ```
 
 ### 2. Import the package
