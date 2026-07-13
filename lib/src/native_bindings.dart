@@ -8,7 +8,21 @@ import 'package:ffi/ffi.dart';
 
 typedef HnswHandle = ffi.Pointer<ffi.Void>;
 
-const _hnswAbiVersion = 2;
+final class NativeHnswStats extends ffi.Struct {
+  @ffi.Uint64()
+  external int elementCount;
+
+  @ffi.Uint64()
+  external int deletedCount;
+
+  @ffi.Uint64()
+  external int maxElements;
+
+  @ffi.Int32()
+  external int efSearch;
+}
+
+const _hnswAbiVersion = 3;
 const _libraryPathEnvVar = 'DART_HNSW_LIBRARY_PATH';
 const _forceDynamicLibraryEnvVar = 'DART_HNSW_FORCE_DYNAMIC_LIBRARY';
 
@@ -42,33 +56,14 @@ typedef _DartHnswCreate =
     );
 
 typedef _NativeHnswLoad =
-    HnswHandle Function(
-      ffi.Pointer<Utf8>,
+    ffi.Int32 Function(
+      HnswHandle,
       ffi.Pointer<ffi.Uint8>,
       ffi.Int32,
-      ffi.Int32,
-      ffi.Int32,
-      ffi.Int32,
-      ffi.Int32,
-      ffi.Int32,
-      ffi.Int32,
-      ffi.Int32,
-      ffi.Pointer<ffi.Int32>,
+      ffi.Int64,
     );
 typedef _DartHnswLoad =
-    HnswHandle Function(
-      ffi.Pointer<Utf8>,
-      ffi.Pointer<ffi.Uint8>,
-      int,
-      int,
-      int,
-      int,
-      int,
-      int,
-      int,
-      int,
-      ffi.Pointer<ffi.Int32>,
-    );
+    int Function(HnswHandle, ffi.Pointer<ffi.Uint8>, int, int);
 
 typedef _NativeHnswClose = ffi.Int32 Function(HnswHandle);
 typedef _DartHnswClose = int Function(HnswHandle);
@@ -76,8 +71,17 @@ typedef _DartHnswClose = int Function(HnswHandle);
 typedef _NativeHnswContextId = ffi.Uint64 Function(HnswHandle);
 typedef _DartHnswContextId = int Function(HnswHandle);
 
+typedef _NativeHnswGeneration = ffi.Uint64 Function(HnswHandle);
+typedef _DartHnswGeneration = int Function(HnswHandle);
+
+typedef _NativeHnswExclusiveMutationAccess = ffi.Int32 Function(HnswHandle);
+typedef _DartHnswExclusiveMutationAccess = int Function(HnswHandle);
+
 typedef _NativeHnswRegistrySize = ffi.Uint64 Function();
 typedef _DartHnswRegistrySize = int Function();
+
+typedef _NativeHnswClear = ffi.Int32 Function(HnswHandle, ffi.Int64);
+typedef _DartHnswClear = int Function(HnswHandle, int);
 
 typedef _NativeHnswUpsertVector =
     ffi.Int32 Function(HnswHandle, ffi.Uint64, ffi.Pointer<ffi.Float>);
@@ -127,17 +131,9 @@ typedef _DartHnswSearchKnn =
       ffi.Pointer<ffi.Int32>,
     );
 
-typedef _NativeHnswElementCount = ffi.Uint64 Function(HnswHandle);
-typedef _DartHnswElementCount = int Function(HnswHandle);
-
-typedef _NativeHnswDeletedCount = ffi.Uint64 Function(HnswHandle);
-typedef _DartHnswDeletedCount = int Function(HnswHandle);
-
-typedef _NativeHnswMaxElements = ffi.Uint64 Function(HnswHandle);
-typedef _DartHnswMaxElements = int Function(HnswHandle);
-
-typedef _NativeHnswGetEfSearch = ffi.Int32 Function(HnswHandle);
-typedef _DartHnswGetEfSearch = int Function(HnswHandle);
+typedef _NativeHnswStats =
+    ffi.Int32 Function(HnswHandle, ffi.Pointer<NativeHnswStats>);
+typedef _DartHnswStats = int Function(HnswHandle, ffi.Pointer<NativeHnswStats>);
 
 typedef _NativeHnswCheckpoint =
     ffi.Int32 Function(
@@ -145,6 +141,7 @@ typedef _NativeHnswCheckpoint =
       ffi.Pointer<ffi.Uint8>,
       ffi.Int32,
       ffi.Pointer<ffi.Int32>,
+      ffi.Int64,
     );
 typedef _DartHnswCheckpoint =
     int Function(
@@ -152,6 +149,7 @@ typedef _DartHnswCheckpoint =
       ffi.Pointer<ffi.Uint8>,
       int,
       ffi.Pointer<ffi.Int32>,
+      int,
     );
 
 typedef _NativeHnswAbiVersion = ffi.Int32 Function();
@@ -175,18 +173,11 @@ external HnswHandle nativeHnswCreate(
 );
 
 @ffi.Native<_NativeHnswLoad>(symbol: 'hnsw_load')
-external HnswHandle nativeHnswLoad(
-  ffi.Pointer<Utf8> collectionName,
+external int nativeHnswLoad(
+  HnswHandle handle,
   ffi.Pointer<ffi.Uint8> data,
   int dataSize,
-  int dimensions,
-  int maxElements,
-  int m,
-  int efConstruction,
-  int efSearch,
-  int metric,
-  int allowReplaceDeleted,
-  ffi.Pointer<ffi.Int32> errorCode,
+  int expectedGeneration,
 );
 
 @ffi.Native<_NativeHnswClose>(symbol: 'hnsw_close')
@@ -195,8 +186,24 @@ external int nativeHnswClose(HnswHandle handle);
 @ffi.Native<_NativeHnswContextId>(symbol: 'hnsw_context_id')
 external int nativeHnswContextId(HnswHandle handle);
 
+@ffi.Native<_NativeHnswGeneration>(symbol: 'hnsw_generation')
+external int nativeHnswGeneration(HnswHandle handle);
+
+@ffi.Native<_NativeHnswExclusiveMutationAccess>(
+  symbol: 'hnsw_acquire_exclusive_mutation_access',
+)
+external int nativeHnswAcquireExclusiveMutationAccess(HnswHandle handle);
+
+@ffi.Native<_NativeHnswExclusiveMutationAccess>(
+  symbol: 'hnsw_release_exclusive_mutation_access',
+)
+external int nativeHnswReleaseExclusiveMutationAccess(HnswHandle handle);
+
 @ffi.Native<_NativeHnswRegistrySize>(symbol: 'hnsw_registry_size')
 external int nativeHnswRegistrySize();
+
+@ffi.Native<_NativeHnswClear>(symbol: 'hnsw_clear')
+external int nativeHnswClear(HnswHandle handle, int expectedGeneration);
 
 @ffi.Native<_NativeHnswUpsertVector>(symbol: 'hnsw_upsert_vector')
 external int nativeHnswUpsertVector(
@@ -232,17 +239,11 @@ external int nativeHnswSearchKnn(
   ffi.Pointer<ffi.Int32> outCount,
 );
 
-@ffi.Native<_NativeHnswElementCount>(symbol: 'hnsw_element_count')
-external int nativeHnswElementCount(HnswHandle handle);
-
-@ffi.Native<_NativeHnswDeletedCount>(symbol: 'hnsw_deleted_count')
-external int nativeHnswDeletedCount(HnswHandle handle);
-
-@ffi.Native<_NativeHnswMaxElements>(symbol: 'hnsw_max_elements')
-external int nativeHnswMaxElements(HnswHandle handle);
-
-@ffi.Native<_NativeHnswGetEfSearch>(symbol: 'hnsw_get_ef_search')
-external int nativeHnswGetEfSearch(HnswHandle handle);
+@ffi.Native<_NativeHnswStats>(symbol: 'hnsw_stats')
+external int nativeHnswStats(
+  HnswHandle handle,
+  ffi.Pointer<NativeHnswStats> outStats,
+);
 
 @ffi.Native<_NativeHnswCheckpoint>(symbol: 'hnsw_checkpoint')
 external int nativeHnswCheckpoint(
@@ -250,6 +251,7 @@ external int nativeHnswCheckpoint(
   ffi.Pointer<ffi.Uint8> outBuffer,
   int bufferSize,
   ffi.Pointer<ffi.Int32> outWritten,
+  int expectedGeneration,
 );
 
 @ffi.Native<_NativeHnswAbiVersion>(symbol: 'hnsw_abi_version')
@@ -265,17 +267,18 @@ class HnswNativeBindings {
   final _DartHnswLoad _hnswLoad;
   final _DartHnswClose _hnswClose;
   final _DartHnswContextId _hnswContextId;
+  final _DartHnswGeneration _hnswGeneration;
+  final _DartHnswExclusiveMutationAccess _hnswAcquireExclusiveMutationAccess;
+  final _DartHnswExclusiveMutationAccess _hnswReleaseExclusiveMutationAccess;
   final _DartHnswRegistrySize _hnswRegistrySize;
+  final _DartHnswClear _hnswClear;
   final _DartHnswUpsertVector _hnswUpsertVector;
   final _DartHnswUpsertBatch _hnswUpsertBatch;
   final _DartHnswMarkDeleted _hnswMarkDeleted;
   final _DartHnswResize _hnswResize;
   final _DartHnswSetEfSearch _hnswSetEfSearch;
   final _DartHnswSearchKnn _hnswSearchKnn;
-  final _DartHnswElementCount _hnswElementCount;
-  final _DartHnswDeletedCount _hnswDeletedCount;
-  final _DartHnswMaxElements _hnswMaxElements;
-  final _DartHnswGetEfSearch _hnswGetEfSearch;
+  final _DartHnswStats _hnswStats;
   final _DartHnswCheckpoint _hnswCheckpoint;
 
   factory HnswNativeBindings([String? libraryPath]) =>
@@ -298,17 +301,20 @@ class HnswNativeBindings {
       _hnswLoad = resolved.hnswLoad,
       _hnswClose = resolved.hnswClose,
       _hnswContextId = resolved.hnswContextId,
+      _hnswGeneration = resolved.hnswGeneration,
+      _hnswAcquireExclusiveMutationAccess =
+          resolved.hnswAcquireExclusiveMutationAccess,
+      _hnswReleaseExclusiveMutationAccess =
+          resolved.hnswReleaseExclusiveMutationAccess,
       _hnswRegistrySize = resolved.hnswRegistrySize,
+      _hnswClear = resolved.hnswClear,
       _hnswUpsertVector = resolved.hnswUpsertVector,
       _hnswUpsertBatch = resolved.hnswUpsertBatch,
       _hnswMarkDeleted = resolved.hnswMarkDeleted,
       _hnswResize = resolved.hnswResize,
       _hnswSetEfSearch = resolved.hnswSetEfSearch,
       _hnswSearchKnn = resolved.hnswSearchKnn,
-      _hnswElementCount = resolved.hnswElementCount,
-      _hnswDeletedCount = resolved.hnswDeletedCount,
-      _hnswMaxElements = resolved.hnswMaxElements,
-      _hnswGetEfSearch = resolved.hnswGetEfSearch,
+      _hnswStats = resolved.hnswStats,
       _hnswCheckpoint = resolved.hnswCheckpoint;
 
   static String libraryFileNameForCurrentPlatform() {
@@ -330,17 +336,12 @@ class HnswNativeBindings {
       return File(envPath).absolute.path;
     }
 
-    final fileName = libraryFileNameForCurrentPlatform();
-    final candidates = <String>{};
-
     final resolvedExecutable = Platform.resolvedExecutable;
     if (resolvedExecutable.isNotEmpty) {
-      candidates.add(File(resolvedExecutable).absolute.parent.path);
-    }
-    candidates.add(Directory.current.absolute.path);
-
-    for (final directory in candidates) {
-      final candidate = File('$directory${Platform.pathSeparator}$fileName');
+      final candidate = File(
+        '${File(resolvedExecutable).absolute.parent.path}'
+        '${Platform.pathSeparator}${libraryFileNameForCurrentPlatform()}',
+      );
       if (candidate.existsSync()) {
         return candidate.absolute.path;
       }
@@ -387,37 +388,29 @@ class HnswNativeBindings {
     errorCode,
   );
 
-  HnswHandle hnswLoad(
-    ffi.Pointer<Utf8> collectionName,
+  int hnswLoad(
+    HnswHandle handle,
     ffi.Pointer<ffi.Uint8> data,
     int dataSize,
-    int dimensions,
-    int maxElements,
-    int m,
-    int efConstruction,
-    int efSearch,
-    int metric,
-    int allowReplaceDeleted,
-    ffi.Pointer<ffi.Int32> errorCode,
-  ) => _hnswLoad(
-    collectionName,
-    data,
-    dataSize,
-    dimensions,
-    maxElements,
-    m,
-    efConstruction,
-    efSearch,
-    metric,
-    allowReplaceDeleted,
-    errorCode,
-  );
+    int expectedGeneration,
+  ) => _hnswLoad(handle, data, dataSize, expectedGeneration);
 
   int hnswClose(HnswHandle handle) => _hnswClose(handle);
 
   int hnswContextId(HnswHandle handle) => _hnswContextId(handle);
 
+  int hnswGeneration(HnswHandle handle) => _hnswGeneration(handle);
+
+  int hnswAcquireExclusiveMutationAccess(HnswHandle handle) =>
+      _hnswAcquireExclusiveMutationAccess(handle);
+
+  int hnswReleaseExclusiveMutationAccess(HnswHandle handle) =>
+      _hnswReleaseExclusiveMutationAccess(handle);
+
   int hnswRegistrySize() => _hnswRegistrySize();
+
+  int hnswClear(HnswHandle handle, int expectedGeneration) =>
+      _hnswClear(handle, expectedGeneration);
 
   int hnswUpsertVector(
     HnswHandle handle,
@@ -450,20 +443,22 @@ class HnswNativeBindings {
     ffi.Pointer<ffi.Int32> outCount,
   ) => _hnswSearchKnn(handle, query, k, outLabels, outDistances, outCount);
 
-  int hnswElementCount(HnswHandle handle) => _hnswElementCount(handle);
-
-  int hnswDeletedCount(HnswHandle handle) => _hnswDeletedCount(handle);
-
-  int hnswMaxElements(HnswHandle handle) => _hnswMaxElements(handle);
-
-  int hnswGetEfSearch(HnswHandle handle) => _hnswGetEfSearch(handle);
+  int hnswStats(HnswHandle handle, ffi.Pointer<NativeHnswStats> outStats) =>
+      _hnswStats(handle, outStats);
 
   int hnswCheckpoint(
     HnswHandle handle,
     ffi.Pointer<ffi.Uint8> outBuffer,
     int bufferSize,
     ffi.Pointer<ffi.Int32> outWritten,
-  ) => _hnswCheckpoint(handle, outBuffer, bufferSize, outWritten);
+    int expectedGeneration,
+  ) => _hnswCheckpoint(
+    handle,
+    outBuffer,
+    bufferSize,
+    outWritten,
+    expectedGeneration,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -476,17 +471,18 @@ class _ResolvedBindings {
   final _DartHnswLoad hnswLoad;
   final _DartHnswClose hnswClose;
   final _DartHnswContextId hnswContextId;
+  final _DartHnswGeneration hnswGeneration;
+  final _DartHnswExclusiveMutationAccess hnswAcquireExclusiveMutationAccess;
+  final _DartHnswExclusiveMutationAccess hnswReleaseExclusiveMutationAccess;
   final _DartHnswRegistrySize hnswRegistrySize;
+  final _DartHnswClear hnswClear;
   final _DartHnswUpsertVector hnswUpsertVector;
   final _DartHnswUpsertBatch hnswUpsertBatch;
   final _DartHnswMarkDeleted hnswMarkDeleted;
   final _DartHnswResize hnswResize;
   final _DartHnswSetEfSearch hnswSetEfSearch;
   final _DartHnswSearchKnn hnswSearchKnn;
-  final _DartHnswElementCount hnswElementCount;
-  final _DartHnswDeletedCount hnswDeletedCount;
-  final _DartHnswMaxElements hnswMaxElements;
-  final _DartHnswGetEfSearch hnswGetEfSearch;
+  final _DartHnswStats hnswStats;
   final _DartHnswCheckpoint hnswCheckpoint;
 
   _ResolvedBindings({
@@ -495,17 +491,18 @@ class _ResolvedBindings {
     required this.hnswLoad,
     required this.hnswClose,
     required this.hnswContextId,
+    required this.hnswGeneration,
+    required this.hnswAcquireExclusiveMutationAccess,
+    required this.hnswReleaseExclusiveMutationAccess,
     required this.hnswRegistrySize,
+    required this.hnswClear,
     required this.hnswUpsertVector,
     required this.hnswUpsertBatch,
     required this.hnswMarkDeleted,
     required this.hnswResize,
     required this.hnswSetEfSearch,
     required this.hnswSearchKnn,
-    required this.hnswElementCount,
-    required this.hnswDeletedCount,
-    required this.hnswMaxElements,
-    required this.hnswGetEfSearch,
+    required this.hnswStats,
     required this.hnswCheckpoint,
   });
 
@@ -534,17 +531,20 @@ class _ResolvedBindings {
         hnswLoad: nativeHnswLoad,
         hnswClose: nativeHnswClose,
         hnswContextId: nativeHnswContextId,
+        hnswGeneration: nativeHnswGeneration,
+        hnswAcquireExclusiveMutationAccess:
+            nativeHnswAcquireExclusiveMutationAccess,
+        hnswReleaseExclusiveMutationAccess:
+            nativeHnswReleaseExclusiveMutationAccess,
         hnswRegistrySize: nativeHnswRegistrySize,
+        hnswClear: nativeHnswClear,
         hnswUpsertVector: nativeHnswUpsertVector,
         hnswUpsertBatch: nativeHnswUpsertBatch,
         hnswMarkDeleted: nativeHnswMarkDeleted,
         hnswResize: nativeHnswResize,
         hnswSetEfSearch: nativeHnswSetEfSearch,
         hnswSearchKnn: nativeHnswSearchKnn,
-        hnswElementCount: nativeHnswElementCount,
-        hnswDeletedCount: nativeHnswDeletedCount,
-        hnswMaxElements: nativeHnswMaxElements,
-        hnswGetEfSearch: nativeHnswGetEfSearch,
+        hnswStats: nativeHnswStats,
         hnswCheckpoint: nativeHnswCheckpoint,
       );
     } catch (_) {
@@ -597,10 +597,27 @@ class _ResolvedBindings {
           .lookupFunction<_NativeHnswContextId, _DartHnswContextId>(
             'hnsw_context_id',
           ),
+      hnswGeneration: library
+          .lookupFunction<_NativeHnswGeneration, _DartHnswGeneration>(
+            'hnsw_generation',
+          ),
+      hnswAcquireExclusiveMutationAccess: library
+          .lookupFunction<
+            _NativeHnswExclusiveMutationAccess,
+            _DartHnswExclusiveMutationAccess
+          >('hnsw_acquire_exclusive_mutation_access'),
+      hnswReleaseExclusiveMutationAccess: library
+          .lookupFunction<
+            _NativeHnswExclusiveMutationAccess,
+            _DartHnswExclusiveMutationAccess
+          >('hnsw_release_exclusive_mutation_access'),
       hnswRegistrySize: library
           .lookupFunction<_NativeHnswRegistrySize, _DartHnswRegistrySize>(
             'hnsw_registry_size',
           ),
+      hnswClear: library.lookupFunction<_NativeHnswClear, _DartHnswClear>(
+        'hnsw_clear',
+      ),
       hnswUpsertVector: library
           .lookupFunction<_NativeHnswUpsertVector, _DartHnswUpsertVector>(
             'hnsw_upsert_vector',
@@ -624,22 +641,9 @@ class _ResolvedBindings {
           .lookupFunction<_NativeHnswSearchKnn, _DartHnswSearchKnn>(
             'hnsw_search_knn',
           ),
-      hnswElementCount: library
-          .lookupFunction<_NativeHnswElementCount, _DartHnswElementCount>(
-            'hnsw_element_count',
-          ),
-      hnswDeletedCount: library
-          .lookupFunction<_NativeHnswDeletedCount, _DartHnswDeletedCount>(
-            'hnsw_deleted_count',
-          ),
-      hnswMaxElements: library
-          .lookupFunction<_NativeHnswMaxElements, _DartHnswMaxElements>(
-            'hnsw_max_elements',
-          ),
-      hnswGetEfSearch: library
-          .lookupFunction<_NativeHnswGetEfSearch, _DartHnswGetEfSearch>(
-            'hnsw_get_ef_search',
-          ),
+      hnswStats: library.lookupFunction<_NativeHnswStats, _DartHnswStats>(
+        'hnsw_stats',
+      ),
       hnswCheckpoint: library
           .lookupFunction<_NativeHnswCheckpoint, _DartHnswCheckpoint>(
             'hnsw_checkpoint',

@@ -9,23 +9,26 @@ cleanup() {
 }
 trap cleanup EXIT
 
-case "$(uname -s)" in
-  Darwin) SIDE_CAR_NAME="libdart_hnsw.dylib" ;;
-  Linux) SIDE_CAR_NAME="libdart_hnsw.so" ;;
-  MINGW*|MSYS*|CYGWIN*|Windows_NT) SIDE_CAR_NAME="dart_hnsw.dll" ;;
-  *) echo "Unsupported OS for compile smoke test" >&2; exit 1 ;;
-esac
-
 cd "$ROOT_DIR"
+
+NATIVE_TEST_FLAGS=(-std=c++17 -pthread)
+if [[ "${DART_HNSW_TSAN:-0}" == "1" ]]; then
+  NATIVE_TEST_FLAGS+=(-fsanitize=thread -fno-omit-frame-pointer -g)
+fi
+"${CXX:-c++}" "${NATIVE_TEST_FLAGS[@]}" \
+  -Inative \
+  -Ithird_party/hnswlib/hnswlib \
+  test/native_concurrency_test.cpp \
+  -o "$OUT_DIR/native_concurrency_test"
+"$OUT_DIR/native_concurrency_test"
 
 dart analyze
 dart test
-dart compile exe example/basic.dart -o "$OUT_DIR/basic_example"
-cp ".dart_tool/lib/$SIDE_CAR_NAME" "$OUT_DIR/$SIDE_CAR_NAME"
+dart build cli --target bin/basic_example.dart --output "$OUT_DIR"
 
 (
-  cd "$OUT_DIR"
-  ./basic_example >/dev/null
+  cd "$OUT_DIR/bundle"
+  ./bin/basic_example >/dev/null
 )
 
 echo "All checks passed."

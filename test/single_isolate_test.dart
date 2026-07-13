@@ -101,7 +101,7 @@ void main() {
     'T2: create with dim=4 → upsert vector of length 5 → expect ArgumentError',
     () {
       final name = testCollectionName('t2_dim_mismatch');
-      final index = HnswIndex.create(
+      final index = HnswIndex.open(
         collectionName: name,
         dimensions: 4,
         maxElements: 100,
@@ -118,7 +118,7 @@ void main() {
 
   test('T2b: close() is idempotent and methods throw after close', () {
     final name = testCollectionName('t2b_closed_handle');
-    final index = HnswIndex.create(
+    final index = HnswIndex.open(
       collectionName: name,
       dimensions: 4,
       maxElements: 100,
@@ -130,12 +130,15 @@ void main() {
 
     expect(() => index.search([1, 0, 0, 0]), throwsA(isA<StateError>()));
     expect(() => index.upsert(2, [0, 1, 0, 0]), throwsA(isA<StateError>()));
-    expect(() => index.checkpoint(), throwsA(isA<StateError>()));
-    expect(() => index.elementCount, throwsA(isA<StateError>()));
+    expect(
+      () => index.checkpoint(expectedGeneration: 0),
+      throwsA(isA<StateError>()),
+    );
+    expect(() => index.stats, throwsA(isA<StateError>()));
   });
 
   test('T2d: closed methods reject before validating their arguments', () {
-    final index = HnswIndex.create(
+    final index = HnswIndex.open(
       collectionName: testCollectionName('t2d_closed_argument_order'),
       dimensions: 4,
       maxElements: 100,
@@ -183,7 +186,7 @@ void main() {
       expect(dynamicNative.hnswUpsertVector(handle, 1, vector), equals(0));
       calloc.free(vector);
 
-      expect(dynamicNative.hnswElementCount(handle), equals(1));
+      expect(readNativeStats(dynamicNative, handle).elementCount, equals(1));
       expect(dynamicNative.hnswClose(handle), equals(0));
       expect(dynamicNative.hnswRegistrySize(), equals(0));
     } finally {
@@ -350,11 +353,30 @@ void main() {
     }
   });
 
+  test('T5: cosine returns 1 - cosine similarity', () {
+    final index = HnswIndex.open(
+      collectionName: testCollectionName('t5_cosine_distance'),
+      dimensions: 2,
+      metric: HnswMetric.cosine,
+      maxElements: 10,
+    );
+
+    try {
+      index.upsert(1, [0, 3]);
+      final result = index.search([2, 0], k: 1).single;
+
+      expect(result.id, equals(1));
+      expect(result.distance, closeTo(1.0, 1e-6));
+    } finally {
+      index.close();
+    }
+  });
+
   // -----------------------------------------------------------------------
-  // T6: resize → maxElements reflects new capacity → upsert beyond old cap
+  // T6: resize → stats reflect new capacity → upsert beyond old cap
   // -----------------------------------------------------------------------
   test(
-    'T6: resize(newMax) → maxElements reflects new capacity → upsert beyond old cap works',
+    'T6: resize(newMax) → stats reflect new capacity → upsert beyond old cap works',
     () {
       final name = testCollectionName('t6_resize');
       final errorCode = calloc<Int32>();
@@ -374,7 +396,7 @@ void main() {
         );
         expect(errorCode.value, equals(0));
 
-        expect(native.hnswMaxElements(handle), equals(10));
+        expect(readNativeStats(native, handle).maxElements, equals(10));
 
         // Fill to capacity
         for (var i = 0; i < 10; i++) {
@@ -384,11 +406,11 @@ void main() {
           calloc.free(vector);
         }
 
-        expect(native.hnswElementCount(handle), equals(10));
+        expect(readNativeStats(native, handle).elementCount, equals(10));
 
         // Resize
         expect(native.hnswResize(handle, 20), equals(0));
-        expect(native.hnswMaxElements(handle), equals(20));
+        expect(readNativeStats(native, handle).maxElements, equals(20));
 
         // Add beyond old capacity
         final vector = calloc<Float>(4);
@@ -396,7 +418,7 @@ void main() {
         expect(native.hnswUpsertVector(handle, 99, vector), equals(0));
         calloc.free(vector);
 
-        expect(native.hnswElementCount(handle), equals(11));
+        expect(readNativeStats(native, handle).elementCount, equals(11));
 
         expect(native.hnswClose(handle), equals(0));
       } finally {
@@ -407,9 +429,9 @@ void main() {
   );
 
   // -----------------------------------------------------------------------
-  // T7: setEfSearch(32) → efSearch getter returns 32
+  // T7: setEfSearch(32) → stats report efSearch 32
   // -----------------------------------------------------------------------
-  test('T7: setEfSearch(32) → efSearch getter returns 32', () {
+  test('T7: setEfSearch(32) → stats report efSearch 32', () {
     final name = testCollectionName('t7_ef_search');
     final errorCode = calloc<Int32>();
     final namePtr = name.toNativeUtf8();
@@ -428,10 +450,10 @@ void main() {
       );
       expect(errorCode.value, equals(0));
 
-      expect(native.hnswGetEfSearch(handle), equals(64));
+      expect(readNativeStats(native, handle).efSearch, equals(64));
 
       expect(native.hnswSetEfSearch(handle, 32), equals(0));
-      expect(native.hnswGetEfSearch(handle), equals(32));
+      expect(readNativeStats(native, handle).efSearch, equals(32));
 
       expect(native.hnswClose(handle), equals(0));
     } finally {
@@ -441,9 +463,9 @@ void main() {
   });
 
   // -----------------------------------------------------------------------
-  // T8: elementCount and maxElements return correct values
+  // T8: stats return correct element count and capacity values
   // -----------------------------------------------------------------------
-  test('T8: elementCount and maxElements return correct values', () {
+  test('T8: stats return correct element count and capacity values', () {
     final name = testCollectionName('t8_counts');
     final errorCode = calloc<Int32>();
     final namePtr = name.toNativeUtf8();
@@ -462,8 +484,9 @@ void main() {
       );
       expect(errorCode.value, equals(0));
 
-      expect(native.hnswElementCount(handle), equals(0));
-      expect(native.hnswMaxElements(handle), equals(500));
+      var stats = readNativeStats(native, handle);
+      expect(stats.elementCount, equals(0));
+      expect(stats.maxElements, equals(500));
 
       for (var i = 0; i < 10; i++) {
         final vector = calloc<Float>(4);
@@ -472,13 +495,41 @@ void main() {
         calloc.free(vector);
       }
 
-      expect(native.hnswElementCount(handle), equals(10));
-      expect(native.hnswMaxElements(handle), equals(500));
+      stats = readNativeStats(native, handle);
+      expect(stats.elementCount, equals(10));
+      expect(stats.maxElements, equals(500));
 
       expect(native.hnswClose(handle), equals(0));
     } finally {
       calloc.free(errorCode);
       calloc.free(namePtr);
+    }
+  });
+
+  test('T8b: stats returns one complete index metadata snapshot', () {
+    final index = HnswIndex.open(
+      collectionName: testCollectionName('t8b_stats_snapshot'),
+      dimensions: 4,
+      maxElements: 500,
+      efSearch: 32,
+    );
+    try {
+      index.upsert(1, [1, 0, 0, 0]);
+      index.upsert(2, [0, 1, 0, 0]);
+      index.markDeleted(1);
+
+      expect(
+        index.stats,
+        const HnswStats(
+          elementCount: 2,
+          deletedCount: 1,
+          maxElements: 500,
+          efSearch: 32,
+        ),
+      );
+      expect(index.stats.liveCount, equals(1));
+    } finally {
+      index.close();
     }
   });
 }

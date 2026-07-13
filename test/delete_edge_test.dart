@@ -91,7 +91,7 @@ void main() {
       expect(errorCode.value, equals(0));
       expect(isNullPointer(handle), isFalse);
 
-      expect(native.hnswElementCount(handle), equals(0));
+      expect(readNativeStats(native, handle).elementCount, equals(0));
 
       expect(native.hnswClose(handle), equals(0));
       expect(native.hnswRegistrySize(), equals(0));
@@ -117,10 +117,8 @@ void main() {
     }
 
     try {
-      final handle = native.hnswLoad(
+      final handle = native.hnswCreate(
         namePtr,
-        dataPtr,
-        garbage.length,
         4,
         100,
         16,
@@ -130,8 +128,9 @@ void main() {
         1,
         errorCode,
       );
-      expect(errorCode.value, equals(-5));
-      expect(isNullPointer(handle), isTrue);
+      expect(errorCode.value, equals(0));
+      expect(native.hnswLoad(handle, dataPtr, garbage.length, 0), equals(-5));
+      expect(native.hnswClose(handle), equals(0));
     } finally {
       calloc.free(errorCode);
       calloc.free(namePtr);
@@ -214,15 +213,17 @@ void main() {
       expect(native.hnswUpsertVector(handle, 2, vector), equals(0));
       calloc.free(vector);
 
-      expect(native.hnswElementCount(handle), equals(2));
-      expect(native.hnswDeletedCount(handle), equals(0));
+      var stats = readNativeStats(native, handle);
+      expect(stats.elementCount, equals(2));
+      expect(stats.deletedCount, equals(0));
 
       // Mark one deleted
       expect(native.hnswMarkDeleted(handle, 1), equals(0));
 
       // elementCount unchanged (mark-based, not removal)
-      expect(native.hnswElementCount(handle), equals(2));
-      expect(native.hnswDeletedCount(handle), equals(1));
+      stats = readNativeStats(native, handle);
+      expect(stats.elementCount, equals(2));
+      expect(stats.deletedCount, equals(1));
 
       expect(native.hnswClose(handle), equals(0));
       expect(native.hnswRegistrySize(), equals(0));

@@ -1,10 +1,8 @@
-import 'dart:io';
-
 import 'package:dart_hnsw/dart_hnsw.dart';
 
 void main() {
-  // Create an in-memory index — no file path needed.
-  final index = HnswIndex.create(
+  // Open an in-memory index — no file path needed.
+  final index = HnswIndex.open(
     collectionName: 'example',
     dimensions: 4,
     metric: HnswMetric.l2,
@@ -19,31 +17,20 @@ void main() {
     print('id=${r.id} distance=${r.distance}');
   }
 
-  // checkpoint() returns raw bytes — you decide where to store them.
-  final bytes = index.checkpoint();
+  // Capture the generation before checkpointing shared state.
+  final generation = index.generation;
+  final bytes = index.checkpoint(expectedGeneration: generation);
   print('Checkpoint size: ${bytes.length} bytes');
 
-  // Example: write to a file (but you could store in a DB, blob, etc.)
-  File('example.hnsw').writeAsBytesSync(bytes);
+  // The application owns persistence and may pass these bytes directly to
+  // another layer or retain them for a later load.
+  // load() atomically replaces this shared context.
+  index.load(bytes, expectedGeneration: generation);
 
-  index.close();
-
-  // Later — restore from bytes.
-  final restored = HnswIndex.load(
-    collectionName: 'example_restored',
-    bytes: File('example.hnsw').readAsBytesSync(),
-    dimensions: 4,
-    metric: HnswMetric.l2,
-    maxElements: 1000,
-  );
-
-  final restoredResults = restored.search([0.9, 0.1, 0, 0], k: 2);
+  final restoredResults = index.search([0.9, 0.1, 0, 0], k: 2);
   for (final r in restoredResults) {
     print('restored: id=${r.id} distance=${r.distance}');
   }
 
-  restored.close();
-
-  // Cleanup example file.
-  File('example.hnsw').deleteSync();
+  index.close();
 }

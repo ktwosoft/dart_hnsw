@@ -51,6 +51,23 @@ String testCollectionName(String label) {
 
 bool isNullPointer(Pointer pointer) => pointer.address == 0;
 
+({int elementCount, int deletedCount, int maxElements, int efSearch})
+readNativeStats(HnswNativeBindings native, Pointer<Void> handle) {
+  final stats = calloc<NativeHnswStats>();
+  try {
+    final result = native.hnswStats(handle, stats);
+    if (result != 0) throw StateError('hnsw_stats failed with $result');
+    return (
+      elementCount: stats.ref.elementCount,
+      deletedCount: stats.ref.deletedCount,
+      maxElements: stats.ref.maxElements,
+      efSearch: stats.ref.efSearch,
+    );
+  } finally {
+    calloc.free(stats);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Worker config / result
 // ---------------------------------------------------------------------------
@@ -261,6 +278,11 @@ void searchWorker(WorkerConfig config) {
     final handle = createOrExit(native, config, errorCode, namePtr);
 
     for (var i = 0; i < config.iterations; i++) {
+      // Exercise every read-only entrypoint while reloads may replace the
+      // underlying graph from another isolate.
+      native.hnswGeneration(handle);
+      readNativeStats(native, handle);
+
       final query = calloc<Float>(4);
       query[0] = 1.0;
       query[1] = 0.0;

@@ -4,9 +4,10 @@
 /// native [hnswlib](https://github.com/nmslib/hnswlib) with:
 /// - Pure in-memory indexes — no filesystem dependency
 /// - Shared in-process contexts — one native context per collection name
-/// - Reader-writer locking for safe multi-isolate concurrency
+/// - Concurrent query and upsert groups with exclusive administration
+/// - Handle-owned exclusive mutation access for stable checkpoint shutdowns
 /// - `checkpoint()` returns raw bytes so the caller controls storage
-/// - `load()` restores from bytes — store them anywhere (FS, DB, blob, etc.)
+/// - `load()` atomically restores or replaces content from bytes
 ///
 /// Supports `l2`, `innerProduct`, and `cosine` distance metrics.
 /// Native assets are configured for macOS, Linux, Windows, iOS, and Android.
@@ -17,13 +18,18 @@ export 'src/hnsw_index.dart'
         HnswIndex,
         HnswMetric,
         HnswResult,
+        HnswStats,
         HnswVectorEntry,
+        HnswLimits,
         HnswErrorCode,
         HnswException,
         HnswOpenException,
         HnswDimensionMismatchException,
+        HnswGenerationConflictException,
+        HnswExclusiveMutationAccessException,
         HnswCapacityExceededException,
         HnswLoadException,
         HnswCheckpointException,
         HnswZeroVectorException,
+        HnswNonFiniteVectorException,
         HnswNativeException;

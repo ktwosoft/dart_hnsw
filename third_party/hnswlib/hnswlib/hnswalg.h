@@ -62,6 +62,8 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
     std::default_random_engine level_generator_;
     std::default_random_engine update_probability_generator_;
+    std::mutex level_generator_lock;
+    std::mutex update_probability_generator_lock;
 
     mutable std::atomic<long> metric_distance_computations{0};
     mutable std::atomic<long> metric_hops{0};
@@ -196,6 +198,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
     int getRandomLevel(double reverse_size) {
         std::uniform_real_distribution<double> distribution(0.0, 1.0);
+        std::lock_guard<std::mutex> lock(level_generator_lock);
         double r = -log(distribution(level_generator_)) * reverse_size;
         return (int) r;
     }
@@ -1093,7 +1096,12 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             for (auto&& elOneHop : listOneHop) {
                 sCand.insert(elOneHop);
 
-                if (distribution(update_probability_generator_) > updateNeighborProbability)
+                float update_probability;
+                {
+                    std::lock_guard<std::mutex> lock(update_probability_generator_lock);
+                    update_probability = distribution(update_probability_generator_);
+                }
+                if (update_probability > updateNeighborProbability)
                     continue;
 
                 sNeigh.insert(elOneHop);

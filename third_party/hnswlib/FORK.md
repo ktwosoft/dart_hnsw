@@ -16,6 +16,11 @@ The binary format is **unchanged** — the same bytes are written and read, just
 `std::stringstream` instead of `std::ofstream`/`std::ifstream`. Index files produced by
 upstream hnswlib are fully compatible.
 
+The shared level and update-probability random engines are protected by narrow mutex
+sections. Upstream documents concurrent additions as supported, but its random engines
+mutate shared state; the added locks remove those data races without serializing graph
+construction or update work.
+
 ### `bruteforce.h`
 
 Same stream-based replacement for `saveIndex` / `loadIndex`.

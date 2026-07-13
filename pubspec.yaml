@@ -1,6 +1,6 @@
 name: dart_hnsw
-version: 0.2.0
-description: Cross-platform hnswlib bindings for Dart with pure in-memory indexes, reader-writer locking, and multi-isolate concurrency.
+version: 0.3.0
+description: Cross-platform hnswlib bindings for Dart with shared in-memory indexes, atomic snapshots, and multi-isolate concurrency.
 homepage: https://github.com/ktwosoft/dart_hnsw
 repository: https://github.com/ktwosoft/dart_hnsw
 issue_tracker: https://github.com/ktwosoft/dart_hnsw/issues
