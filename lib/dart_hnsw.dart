@@ -1,4 +1,4 @@
-/// Cross-platform HNSWlib native bindings for Dart.
+/// Native and browser HNSWlib bindings for Dart.
 ///
 /// Provides high-performance approximate nearest neighbor search through
 /// native [hnswlib](https://github.com/nmslib/hnswlib) with:
@@ -11,6 +11,8 @@
 ///
 /// Supports `l2`, `innerProduct`, and `cosine` distance metrics.
 /// Native assets are configured for macOS, Linux, Windows, iOS, and Android.
+/// On web, await HnswIndex.initialize before using the synchronous API.
+/// Browser C++ Wasm assets are compiled separately with tool/build_web.sh.
 // ignore_for_file: dangling_library_doc_comments
 
 export 'src/hnsw_index.dart'

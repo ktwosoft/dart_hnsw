@@ -24,11 +24,11 @@ fi
 
 dart analyze
 dart test
-dart build cli --target bin/basic_example.dart --output "$OUT_DIR"
+dart build cli --target example/example.dart --output "$OUT_DIR"
 
 (
   cd "$OUT_DIR/bundle"
-  ./bin/basic_example >/dev/null
+  ./bin/example >/dev/null
 )
 
 echo "All checks passed."

@@ -1,5 +1,5 @@
 name: dart_hnsw
-version: 0.3.0
+version: 0.4.0
 description: Cross-platform hnswlib bindings for Dart with shared in-memory indexes, atomic snapshots, and multi-isolate concurrency.
 homepage: https://github.com/ktwosoft/dart_hnsw
 repository: https://github.com/ktwosoft/dart_hnsw
@@ -16,11 +16,13 @@ platforms:
   linux:
   macos:
   windows:
+  web:
 
 environment:
   sdk: '>=3.12.0 <4.0.0'
 
 dependencies:
+  web: ^1.1.1
   ffi: ^2.1.0
   code_assets: ^1.2.1
   hooks: ^2.0.2

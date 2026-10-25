@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+
+- Add a direct wasm32 backend for the existing synchronous `HnswIndex` API,
+  with asynchronous web initialization and configurable JS/Wasm asset URLs.
+- Preserve native build hooks and isolate sharing; document web sharing and
+  checkpoint ABI boundaries, and validate both Dart JS and Dart Wasm in Chrome.
+
 ## 0.3.0
 
 - **Breaking change:** renamed `HnswIndex.create()` to `HnswIndex.open()`.

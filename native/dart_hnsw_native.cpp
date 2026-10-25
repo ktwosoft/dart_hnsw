@@ -11,6 +11,10 @@
 #include <unordered_map>
 #include <vector>
 
+#ifdef __EMSCRIPTEN__
+#include <malloc.h>
+#endif
+
 #include "hnswlib.h"
 #include "two_group_mutex.h"
 
@@ -348,6 +352,13 @@ static ContextHandle* get_handle(void* handle) {
 extern "C" {
 
 HNSW_EXPORT int hnsw_abi_version() { return 3; }
+
+#ifdef __EMSCRIPTEN__
+// Live allocator bytes for worker diagnostics; linear memory itself cannot shrink.
+HNSW_EXPORT int hnsw_wasm_allocated_bytes() {
+  return mallinfo().uordblks;
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // hnsw_create — create a new in-memory index (no file path)

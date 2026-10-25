@@ -1,6 +1,6 @@
 # dart_hnsw
 
-Cross-platform Dart Native bindings for [hnswlib](https://github.com/nmslib/hnswlib) — fast approximate nearest neighbor search through native C++ code with shared in-process indexes, grouped operation locking, and multi-isolate concurrency.
+Native and browser Dart bindings for [hnswlib](https://github.com/nmslib/hnswlib) — fast approximate nearest neighbor search through native C++ code with shared in-process indexes, grouped operation locking, and multi-isolate concurrency.
 
 ---
 
@@ -17,6 +17,7 @@ Cross-platform Dart Native bindings for [hnswlib](https://github.com/nmslib/hnsw
 - **Exclusive mutation access** — one handle can safely checkpoint and shut down while other isolates keep searching
 - **Input safety limits** for dimensions, capacity, search breadth, batches, and checkpoint payloads
 - **Cross-platform native assets**: macOS, Linux, Windows, iOS, Android
+- **WebAssembly backend**: the same C++ hnswlib and synchronous `HnswIndex` API on web
 
 ---
 
@@ -54,7 +55,7 @@ The index lives entirely in native memory. `checkpoint()` serializes the index t
 
 ```yaml
 dependencies:
-  dart_hnsw: ^0.3.0
+  dart_hnsw: ^0.4.0
 ```
 
 ### 2. Import the package
@@ -147,7 +148,7 @@ At runtime, `dart_hnsw` resolves native code in this order:
 Example override:
 
 ```sh
-DART_HNSW_LIBRARY_PATH=/opt/dart_hnsw/libdart_hnsw.so ./your_app
+DART_HNSW_LIBRARY_PATH=./lib/libdart_hnsw.so ./your_app
 ```
 
 Only use an override path controlled by your application deployment.
@@ -242,7 +243,15 @@ The package hook has been smoke-tested here for Android arm64 (NDK API 21) and i
 
 The native layer has **zero filesystem dependencies** — all index state lives in memory, and checkpoint/load operate on byte buffers.
 
-Web is unsupported (requires native FFI).
+Web uses the same synchronous `HnswIndex` API after one asynchronous
+`HnswIndex.initialize(loaderUrl: ..., wasmUrl: ...)` call. Compile the existing
+C++ wrapper with `tool/build_web.sh` and serve its matching `hnsw.js` and
+`hnsw.wasm` assets. Dart/Flutter Wasm compilation does not compile this C++ code.
+
+Native isolates retain process-wide graph sharing. Browser handles share within
+one Wasm instance; separate workers/tabs have separate memory. Web IDs are
+restricted to 0..4,294,967,295, and raw checkpoints require a compatible ABI.
+See [web setup, sharing scope and validation](doc/web.md).
 
 ---
 
